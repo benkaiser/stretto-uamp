@@ -179,7 +179,7 @@ abstract class AbstractMusicSource : MusicSource {
                 Log.d(TAG, "Unfocused search for '$query'")
                 filter { song ->
                     song.mediaMetadata.title?.toString().containsCaseInsensitive(query)
-                            || song.mediaMetadata.genre?.toString().containsCaseInsensitive(query)
+                            || song.mediaMetadata.artist?.toString().containsCaseInsensitive(query)
                 }
             } else {
                 // If the user asked to "play music", or something similar, the query will also

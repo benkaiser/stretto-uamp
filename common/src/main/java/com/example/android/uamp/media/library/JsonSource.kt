@@ -142,7 +142,7 @@ fun MediaMetadata.Builder.from(jsonMusic: JsonMusic): MediaMetadata.Builder {
     setIsPlayable(true)
     // The duration from the JSON is given in seconds, but the rest of the code works in
     // milliseconds. Here's where we convert to the proper units.
-    val durationMs = TimeUnit.SECONDS.toMillis(jsonMusic.duration)
+    val durationMs = TimeUnit.SECONDS.toMillis(jsonMusic.duration.toLong())
     val bundle = Bundle()
     bundle.putLong("durationMs", durationMs)
     return this
@@ -197,6 +197,6 @@ class JsonMusic {
     var image: String = ""
     var trackNumber: Long = 0
     var totalTrackCount: Long = 0
-    var duration: Long = -1
+    var duration: Float = -1f
     var site: String = ""
 }

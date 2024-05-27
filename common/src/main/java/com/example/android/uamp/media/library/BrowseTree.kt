@@ -136,6 +136,10 @@ class BrowseTree(
     /** Provides access to the media items by media id. */
     fun getMediaItemByMediaId(mediaId: String) = mediaIdToMediaItem[mediaId]
 
+    fun getFirstPlayableMediaItem(): MediaItem? {
+        return mediaIdToChildren[UAMP_RECOMMENDED_ROOT]?.find { it.mediaMetadata.isPlayable == true }
+    }
+
     /**
      * Builds a node, under the root, that represents an album, given
      * a [MediaItem] object that's one of the songs on that album,

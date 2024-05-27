@@ -124,7 +124,7 @@ open class MusicService : MediaLibraryService() {
     }
 
     private val remoteJsonSource: Uri =
-        Uri.parse("https://storage.googleapis.com/uamp/catalog.json")
+        Uri.parse("https://next.kaiserapps.com/public/benjaminjkaiser@gmail.com/library.json")
 
     private val uAmpAudioAttributes = AudioAttributes.Builder()
         .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
@@ -369,7 +369,7 @@ open class MusicService : MediaLibraryService() {
         ): ListenableFuture<LibraryResult<MediaItem>> {
             return callWhenMusicSourceReady {
                 LibraryResult.ofItem(
-                    browseTree.getMediaItemByMediaId(mediaId) ?: MediaItem.EMPTY,
+                    browseTree.getMediaItemByMediaId(mediaId) ?: browseTree.getFirstPlayableMediaItem() ?: MediaItem.EMPTY,
                     LibraryParams.Builder().build())
             }
         }
