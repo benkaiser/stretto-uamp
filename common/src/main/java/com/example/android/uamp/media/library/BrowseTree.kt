@@ -136,6 +136,23 @@ class BrowseTree(
     /** Provides access to the media items by media id. */
     fun getMediaItemByMediaId(mediaId: String) = mediaIdToMediaItem[mediaId]
 
+    fun getLibrary(): MutableList<MediaItem> {
+        return mediaIdToChildren[UAMP_RECOMMENDED_ROOT]?.toMutableList() ?: mutableListOf()
+    }
+
+    fun getLibraryShuffledOn(mediaId: String): MutableList<MediaItem> {
+        // get the library with getLibrary, then find the current song by mediaId, place it at the start, and shuffle the rest of the songs
+        val library = getLibrary()
+        val currentSong = getMediaItemByMediaId(mediaId)
+        if (currentSong === null) {
+            return library
+        }
+        library.remove(currentSong)
+        library.shuffle()
+        library.add(0, currentSong)
+        return library
+    }
+
     fun getFirstPlayableMediaItem(): MediaItem? {
         return mediaIdToChildren[UAMP_RECOMMENDED_ROOT]?.find { it.mediaMetadata.isPlayable == true }
     }
