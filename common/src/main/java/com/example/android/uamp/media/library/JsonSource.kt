@@ -43,6 +43,7 @@ internal class JsonSource(private val source: Uri) : AbstractMusicSource() {
     }
 
     private var catalog: List<androidx.media3.common.MediaItem> = emptyList()
+    private var playlists: List<JsonPlaylist> = emptyList()
 
     init {
         state = STATE_INITIALIZING
@@ -74,6 +75,8 @@ internal class JsonSource(private val source: Uri) : AbstractMusicSource() {
 
             // Get the base URI to fix up relative references later.
             val baseUri = catalogUri.toString().removeSuffix(catalogUri.lastPathSegment ?: "")
+
+            playlists = musicCat.playlists
 
             musicCat.music.map { song ->
                 // The JSON may have paths that are relative to the source of the JSON
@@ -110,6 +113,16 @@ internal class JsonSource(private val source: Uri) : AbstractMusicSource() {
         }
     }
 
+    override fun getPlaylists(): List<JsonPlaylist> {
+        return playlists
+    }
+
+    override fun getItemFromPlaylist(playlist: JsonPlaylist): MediaItem? {
+        val mediaItem = catalog.find { item ->
+            playlist.songs.contains(item.mediaId)
+        }
+        return mediaItem
+    }
 
     /**
      * Attempts to download a catalog from a given Uri.
@@ -153,6 +166,7 @@ fun MediaMetadata.Builder.from(jsonMusic: JsonMusic): MediaMetadata.Builder {
  */
 class JsonCatalog {
     var music: List<JsonMusic> = ArrayList()
+    var playlists: List<JsonPlaylist> = ArrayList()
 }
 
 /**

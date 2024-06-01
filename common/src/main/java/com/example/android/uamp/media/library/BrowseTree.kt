@@ -104,6 +104,52 @@ class BrowseTree(
             setMediaMetadata(albumsMetadata)
         }.build()
 
+        // Playlists
+        val playlistsMetadata = MediaMetadata.Builder().apply {
+            setTitle(context.getString(R.string.playlists_title))
+            setArtworkUri(
+                Uri.parse(
+                    RESOURCE_ROOT_URI +
+                            context.resources.getResourceEntryName(R.drawable.ic_album)
+                )
+            )
+            setIsPlayable(false)
+            setFolderType(MediaMetadata.FOLDER_TYPE_PLAYLISTS)
+        }.build()
+        rootList += MediaItem.Builder().apply {
+            setMediaId(UAMP_PLAYLISTS_ROOT)
+            setMediaMetadata(playlistsMetadata)
+        }.build()
+
+        val playlistRoot = buildPlaylistRoot()
+        musicSource.getPlaylists().forEach { playlist ->
+            val mediaItem = musicSource.getItemFromPlaylist(playlist)
+            if (mediaItem === null) {
+                return@forEach
+            }
+            val playlistMetadata = mediaItem.mediaMetadata.buildUpon().apply {
+                setTitle(playlist.title)
+                setAlbumTitle("")
+                setFolderType(MediaMetadata.FOLDER_TYPE_PLAYLISTS)
+                setIsPlayable(false)
+            }.build()
+            val playlistMediaItem = mediaItem.buildUpon().apply {
+                setMediaId(playlist.title.toString().urlEncoded)
+                setMediaMetadata(playlistMetadata)
+            }.build()
+            playlistRoot += playlistMediaItem
+            // now add all the songs under the playlist title as a parent
+            val playlistChildren = mutableListOf<MediaItem>()
+            playlist.songs.forEach { songId ->
+                val song = musicSource.find { it.mediaId == songId }
+                if (song === null) {
+                    return@forEach
+                }
+                playlistChildren += song
+            }
+            mediaIdToChildren[playlistMediaItem.mediaId] = playlistChildren
+        }
+
         mediaIdToChildren[UAMP_BROWSABLE_ROOT] = rootList
         musicSource.forEach { mediaItem ->
             val albumMediaId = mediaItem.mediaMetadata.albumTitle.toString().urlEncoded
@@ -140,17 +186,23 @@ class BrowseTree(
         return mediaIdToChildren[UAMP_RECOMMENDED_ROOT]?.toMutableList() ?: mutableListOf()
     }
 
-    fun getLibraryShuffledOn(mediaId: String): MutableList<MediaItem> {
-        // get the library with getLibrary, then find the current song by mediaId, place it at the start, and shuffle the rest of the songs
-        val library = getLibrary()
+    fun getPlaylist(parentId: String?): MutableList<MediaItem>? {
+        if (parentId === null) {
+            return null
+        }
+        return mediaIdToChildren[parentId]?.toMutableList() ?: null
+    }
+
+    fun getLibraryShuffledOn(mediaId: String, parentId: String?): MutableList<MediaItem> {
+        val libraryOrPlaylist = getPlaylist(parentId) ?: getLibrary()
         val currentSong = getMediaItemByMediaId(mediaId)
         if (currentSong === null) {
-            return library
+            return libraryOrPlaylist
         }
-        library.remove(currentSong)
-        library.shuffle()
-        library.add(0, currentSong)
-        return library
+        libraryOrPlaylist.remove(currentSong)
+        libraryOrPlaylist.shuffle()
+        libraryOrPlaylist.add(0, currentSong)
+        return libraryOrPlaylist
     }
 
     fun getFirstPlayableMediaItem(): MediaItem? {
@@ -183,6 +235,11 @@ class BrowseTree(
             mediaIdToChildren[albumMediaItem.mediaId] = it
         }
     }
+
+    private fun buildPlaylistRoot(): MutableList<MediaItem> {
+        mediaIdToChildren[UAMP_PLAYLISTS_ROOT] = mutableListOf()
+        return mediaIdToChildren[UAMP_PLAYLISTS_ROOT]!!
+    }
 }
 
 const val UAMP_BROWSABLE_ROOT = "/"
@@ -190,6 +247,7 @@ const val UAMP_EMPTY_ROOT = "@empty@"
 const val UAMP_RECOMMENDED_ROOT = "__RECOMMENDED__"
 const val UAMP_ALBUMS_ROOT = "__ALBUMS__"
 const val UAMP_RECENT_ROOT = "__RECENT__"
+const val UAMP_PLAYLISTS_ROOT = "__PLAYLISTS__"
 
 const val MEDIA_SEARCH_SUPPORTED = "android.media.browse.SEARCH_SUPPORTED"
 

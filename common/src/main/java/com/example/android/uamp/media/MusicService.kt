@@ -53,6 +53,7 @@ import com.example.android.uamp.media.library.MEDIA_SEARCH_SUPPORTED
 import com.example.android.uamp.media.library.MusicSource
 import com.example.android.uamp.media.library.UAMP_BROWSABLE_ROOT
 import com.example.android.uamp.media.library.UAMP_RECENT_ROOT
+import com.example.android.uamp.media.library.UAMP_PLAYLISTS_ROOT
 import com.example.android.uamp.media.library.UAMP_RECOMMENDED_ROOT
 import com.google.android.gms.cast.framework.CastContext
 import com.google.common.collect.ImmutableList
@@ -117,6 +118,17 @@ open class MusicService : MediaLibraryService() {
             .setMediaMetadata(
                 MediaMetadata.Builder()
                     .setFolderType(MediaMetadata.FOLDER_TYPE_ALBUMS)
+                    .setIsPlayable(false)
+                    .build())
+            .build()
+    }
+
+    private val playlistsRootMediaItem: MediaItem by lazy {
+        MediaItem.Builder()
+            .setMediaId(UAMP_PLAYLISTS_ROOT)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setFolderType(MediaMetadata.FOLDER_TYPE_PLAYLISTS)
                     .setIsPlayable(false)
                     .build())
             .build()
@@ -315,6 +327,7 @@ open class MusicService : MediaLibraryService() {
     }
 
     open inner class MusicServiceCallback: MediaLibrarySession.Callback {
+        private var lastParentId: String = ""
 
         override fun onGetLibraryRoot(
             session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?
@@ -366,6 +379,7 @@ open class MusicService : MediaLibraryService() {
                 )
             }
             return callWhenMusicSourceReady {
+                lastParentId = parentId
                 LibraryResult.ofItemList(
                     browseTree[parentId] ?: ImmutableList.of(),
                     LibraryParams.Builder().build()
@@ -422,7 +436,10 @@ open class MusicService : MediaLibraryService() {
             mediaItems: MutableList<MediaItem>
         ): ListenableFuture<MutableList<MediaItem>> {
             return callWhenMusicSourceReady {
-                browseTree.getLibraryShuffledOn(mediaItems[0].mediaId)
+                if (mediaItems.size > 1) {
+                    return@callWhenMusicSourceReady mediaItems
+                }
+                browseTree.getLibraryShuffledOn(mediaItems[0].mediaId, lastParentId)
 //                mediaItems.map { browseTree.getMediaItemByMediaId(it.mediaId)!! }.toMutableList()
             }
         }

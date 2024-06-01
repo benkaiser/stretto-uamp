@@ -25,6 +25,14 @@ import androidx.media3.common.MediaItem
 import com.example.android.uamp.media.MusicService
 import com.example.android.uamp.media.extensions.containsCaseInsensitive
 
+
+class JsonPlaylist {
+    var title: String = ""
+    var createdAt: Long = 0
+    var updatedAt: Long = 0
+    var songs: List<String> = emptyList()
+}
+
 /**
  * Interface used by [MusicService] for looking up [MediaMetadataCompat] objects.
  *
@@ -49,6 +57,10 @@ interface MusicSource : Iterable<MediaItem> {
     fun whenReady(performAction: (Boolean) -> Unit): Boolean
 
     fun search(query: String, extras: Bundle): List<MediaItem>
+
+    fun getPlaylists(): List<JsonPlaylist>
+
+    fun getItemFromPlaylist(playlistObject: JsonPlaylist): MediaItem?
 }
 
 @IntDef(
