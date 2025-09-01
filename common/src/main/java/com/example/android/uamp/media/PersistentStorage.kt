@@ -89,6 +89,30 @@ internal class PersistentStorage private constructor(val context: Context) {
             }
         }
     }
+
+    suspend fun savePlaylistAccess(playlistId: String) {
+        withContext(Dispatchers.IO) {
+            val currentTime = System.currentTimeMillis()
+            preferences.edit()
+                .putLong("${PLAYLIST_ACCESS_TIME_PREFIX}${playlistId}", currentTime)
+                .apply()
+        }
+    }
+
+    fun getPlaylistAccessTime(playlistId: String): Long {
+        return preferences.getLong("${PLAYLIST_ACCESS_TIME_PREFIX}${playlistId}", 0L)
+    }
+
+    fun getAllPlaylistAccessTimes(): Map<String, Long> {
+        val accessTimes = mutableMapOf<String, Long>()
+        preferences.all.forEach { (key, value) ->
+            if (key.startsWith(PLAYLIST_ACCESS_TIME_PREFIX) && value is Long) {
+                val playlistId = key.removePrefix(PLAYLIST_ACCESS_TIME_PREFIX)
+                accessTimes[playlistId] = value
+            }
+        }
+        return accessTimes
+    }
 }
 
 const val NOTIFICATION_LARGE_ICON_SIZE = 144 // px
@@ -99,3 +123,4 @@ private const val RECENT_SONG_TITLE_KEY = "recent_song_title"
 private const val RECENT_SONG_SUBTITLE_KEY = "recent_song_subtitle"
 private const val RECENT_SONG_ICON_URI_KEY = "recent_song_icon_uri"
 private const val RECENT_SONG_POSITION_KEY = "recent_song_position"
+private const val PLAYLIST_ACCESS_TIME_PREFIX = "playlist_access_time_"

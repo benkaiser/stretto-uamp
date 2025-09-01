@@ -22,6 +22,7 @@ import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import com.example.android.uamp.media.MusicService
+import com.example.android.uamp.media.PersistentStorage
 import com.example.android.uamp.media.R
 import com.example.android.uamp.media.extensions.urlEncoded
 
@@ -47,10 +48,11 @@ import com.example.android.uamp.media.extensions.urlEncoded
  *  `browseTree["Album_A"]` would return "Song_1" and "Song_2". Since those are leaf nodes,
  *  requesting `browseTree["Song_1"]` would return null (there aren't any children of it).
  */
-class BrowseTree(
+internal class BrowseTree(
     val context: Context,
     val musicSource: MusicSource,
-    val recentMediaId: String? = null
+    val recentMediaId: String? = null,
+    private val storage: PersistentStorage? = null
 ) {
     private val mediaIdToChildren = mutableMapOf<String, MutableList<MediaItem>>()
     private val mediaIdToMediaItem = mutableMapOf<String, MediaItem>()
@@ -122,7 +124,14 @@ class BrowseTree(
         }.build()
 
         val playlistRoot = buildPlaylistRoot()
-        musicSource.getPlaylists().forEach { playlist ->
+
+        // Sort playlists by Most Recently Used (MRU) order
+        val playlistsWithAccessTime = musicSource.getPlaylists().map { playlist ->
+            val accessTime = storage?.getPlaylistAccessTime(playlist.title.toString().urlEncoded) ?: 0L
+            Pair(playlist, accessTime)
+        }.sortedByDescending { it.second }  // Sort by access time descending (most recent first)
+
+        playlistsWithAccessTime.forEach { (playlist, _) ->
             val mediaItem = musicSource.getItemFromPlaylist(playlist)
             if (mediaItem === null) {
                 return@forEach

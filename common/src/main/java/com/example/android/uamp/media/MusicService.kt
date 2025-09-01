@@ -101,7 +101,7 @@ open class MusicService : MediaLibraryService() {
      * [callWhenMusicSourceReady] to be sure it is safely ready for usage.
      */
     private val browseTree: BrowseTree by lazy {
-        BrowseTree(applicationContext, musicSource)
+        BrowseTree(applicationContext, musicSource, storage = storage)
     }
 
     private val recentRootMediaItem: MediaItem by lazy {
@@ -337,6 +337,20 @@ open class MusicService : MediaLibraryService() {
         }
     }
 
+    private fun isPlaylistMediaId(mediaId: String): Boolean {
+        // Check if this media ID corresponds to a playlist by checking if it's in the playlists root
+        val playlistItems = browseTree[UAMP_PLAYLISTS_ROOT] ?: return false
+        return playlistItems.any { it.mediaId == mediaId }
+    }
+
+    private fun trackPlaylistAccess(mediaId: String) {
+        if (isPlaylistMediaId(mediaId)) {
+            serviceScope.launch {
+                storage.savePlaylistAccess(mediaId)
+            }
+        }
+    }
+
     open inner class MusicServiceCallback: MediaLibrarySession.Callback {
         private var lastParentId: String = ""
 
@@ -391,6 +405,10 @@ open class MusicService : MediaLibraryService() {
             }
             return callWhenMusicSourceReady {
                 lastParentId = parentId
+
+                // Track playlist access when children are requested
+                trackPlaylistAccess(parentId)
+
                 val allItems = browseTree[parentId] ?: ImmutableList.of()
 
                 // Apply pagination to respect the pageSize limit
@@ -471,6 +489,11 @@ open class MusicService : MediaLibraryService() {
 
                 // For a single item, get the shuffled library/playlist starting with this song
                 val resolvedMediaItems = browseTree.getLibraryShuffledOn(mediaItems[0].mediaId, lastParentId)
+
+                // Track playlist access if we're playing from a playlist
+                lastParentId?.let { parentId ->
+                    trackPlaylistAccess(parentId)
+                }
 
                 // Log the URLs that will be played
                 resolvedMediaItems.forEachIndexed { index, item ->
