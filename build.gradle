@@ -39,7 +39,7 @@ buildscript {
         gradle_version = '3.1.4'
         gson_version = '2.10'
         junit_version = '4.13.2'
-        kotlin_version = '1.9.10'
+        kotlin_version = '1.9.21'
         kotlin_coroutines_version = '1.6.4'
         multidex_version = '1.0.3'
         play_services_auth_version = '20.7.0'

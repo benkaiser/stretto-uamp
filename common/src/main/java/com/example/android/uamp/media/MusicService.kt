@@ -40,7 +40,10 @@ import androidx.media3.common.Player.EVENT_PLAY_WHEN_READY_CHANGED
 import androidx.media3.common.Player.EVENT_POSITION_DISCONTINUITY
 import androidx.media3.common.Player.Listener
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.util.EventLogger
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
@@ -153,11 +156,18 @@ open class MusicService : MediaLibraryService() {
      * for details.
      */
     private val exoPlayer: Player by lazy {
-        val player = ExoPlayer.Builder(this).build().apply {
-            setAudioAttributes(uAmpAudioAttributes, true)
-            setHandleAudioBecomingNoisy(true)
-            addListener(playerListener)
-        }
+        // FOR DEVELOPMENT ONLY: Use insecure HTTP data source factory
+        // This bypasses SSL certificate validation - DO NOT use in production
+        val httpDataSourceFactory = InsecureHttpDataSourceFactory()
+        val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
+
+        val player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .build().apply {
+                setAudioAttributes(uAmpAudioAttributes, true)
+                setHandleAudioBecomingNoisy(true)
+                addListener(playerListener)
+            }
         player.addAnalyticsListener(EventLogger(null, "exoplayer-uamp"))
         player
     }
@@ -373,15 +383,26 @@ open class MusicService : MediaLibraryService() {
                     LibraryResult.ofItemList(
                         storage.loadRecentSong()?.let {
                             song -> listOf(song)
-                        }!!,
+                        } ?: emptyList(),
                         LibraryParams.Builder().build()
                     )
                 )
             }
             return callWhenMusicSourceReady {
                 lastParentId = parentId
+                val allItems = browseTree[parentId] ?: ImmutableList.of()
+
+                // Apply pagination to respect the pageSize limit
+                val fromIndex = page * pageSize
+                val toIndex = min(fromIndex + pageSize, allItems.size)
+                val pagedItems = if (fromIndex < allItems.size) {
+                    allItems.subList(fromIndex, toIndex)
+                } else {
+                    ImmutableList.of<MediaItem>()
+                }
+
                 LibraryResult.ofItemList(
-                    browseTree[parentId] ?: ImmutableList.of(),
+                    pagedItems,
                     LibraryParams.Builder().build()
                 )
             }
@@ -436,11 +457,26 @@ open class MusicService : MediaLibraryService() {
             mediaItems: MutableList<MediaItem>
         ): ListenableFuture<MutableList<MediaItem>> {
             return callWhenMusicSourceReady {
-                if (mediaItems.size > 1) {
-                    return@callWhenMusicSourceReady mediaItems
+                if (mediaItems.isEmpty()) {
+                    return@callWhenMusicSourceReady mutableListOf<MediaItem>()
                 }
-                browseTree.getLibraryShuffledOn(mediaItems[0].mediaId, lastParentId)
-//                mediaItems.map { browseTree.getMediaItemByMediaId(it.mediaId)!! }.toMutableList()
+
+                if (mediaItems.size > 1) {
+                    // For multiple items, resolve each one and return them
+                    return@callWhenMusicSourceReady mediaItems.mapNotNull { mediaItem ->
+                        browseTree.getMediaItemByMediaId(mediaItem.mediaId)
+                    }.toMutableList()
+                }
+
+                // For a single item, get the shuffled library/playlist starting with this song
+                val resolvedMediaItems = browseTree.getLibraryShuffledOn(mediaItems[0].mediaId, lastParentId)
+
+                // Log the URLs that will be played
+                resolvedMediaItems.forEachIndexed { index, item ->
+                    Log.d(TAG, "Media item $index: ID=${item.mediaId}, URI=${item.localConfiguration?.uri}")
+                }
+
+                resolvedMediaItems
             }
         }
 
@@ -485,7 +521,13 @@ open class MusicService : MediaLibraryService() {
 
         override fun onPlayerError(error: PlaybackException) {
             var message = R.string.generic_error;
+            val currentMediaItem = replaceableForwardingPlayer.currentMediaItem
+            val mediaUri = currentMediaItem?.localConfiguration?.uri
+
             Log.e(TAG, "Player error: " + error.errorCodeName + " (" + error.errorCode + ")", error);
+            Log.e(TAG, "Failed URL: $mediaUri");
+            Log.e(TAG, "Current media item: ${currentMediaItem?.mediaId}");
+
             if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
                 || error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND) {
                 message = R.string.error_media_not_found;
