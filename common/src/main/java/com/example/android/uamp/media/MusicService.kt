@@ -156,9 +156,10 @@ open class MusicService : MediaLibraryService() {
      * for details.
      */
     private val exoPlayer: Player by lazy {
-        // FOR DEVELOPMENT ONLY: Use insecure HTTP data source factory
-        // This bypasses SSL certificate validation - DO NOT use in production
-        val httpDataSourceFactory = InsecureHttpDataSourceFactory()
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent("UAMP/1.0")
+            .setConnectTimeoutMs(10000)
+            .setReadTimeoutMs(10000)
         val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
 
         val player = ExoPlayer.Builder(this)
@@ -521,12 +522,8 @@ open class MusicService : MediaLibraryService() {
 
         override fun onPlayerError(error: PlaybackException) {
             var message = R.string.generic_error;
-            val currentMediaItem = replaceableForwardingPlayer.currentMediaItem
-            val mediaUri = currentMediaItem?.localConfiguration?.uri
 
             Log.e(TAG, "Player error: " + error.errorCodeName + " (" + error.errorCode + ")", error);
-            Log.e(TAG, "Failed URL: $mediaUri");
-            Log.e(TAG, "Current media item: ${currentMediaItem?.mediaId}");
 
             if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
                 || error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND) {
