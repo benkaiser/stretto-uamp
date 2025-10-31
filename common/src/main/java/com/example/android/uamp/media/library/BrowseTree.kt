@@ -125,13 +125,8 @@ internal class BrowseTree(
 
         val playlistRoot = buildPlaylistRoot()
 
-        // Sort playlists by Most Recently Used (MRU) order
-        val playlistsWithAccessTime = musicSource.getPlaylists().map { playlist ->
-            val accessTime = storage?.getPlaylistAccessTime(playlist.title.toString().urlEncoded) ?: 0L
-            Pair(playlist, accessTime)
-        }.sortedByDescending { it.second }  // Sort by access time descending (most recent first)
-
-        playlistsWithAccessTime.forEach { (playlist, _) ->
+        // Build playlist items and their children (but don't add to root yet - will be sorted on-demand)
+        musicSource.getPlaylists().forEach { playlist ->
             val mediaItem = musicSource.getItemFromPlaylist(playlist)
             if (mediaItem === null) {
                 return@forEach
@@ -185,8 +180,21 @@ internal class BrowseTree(
     /**
      * Provides access to the list of children with the `get` operator.
      * i.e.: `browseTree\[UAMP_BROWSABLE_ROOT\]`
+     *
+     * For playlists, this returns them sorted by Most Recently Used (MRU) order.
      */
-    operator fun get(mediaId: String) = mediaIdToChildren[mediaId]
+    operator fun get(mediaId: String): List<MediaItem>? {
+        val children = mediaIdToChildren[mediaId] ?: return null
+
+        // If requesting playlists, sort them by MRU order
+        if (mediaId == UAMP_PLAYLISTS_ROOT) {
+            return children.sortedByDescending { playlistItem ->
+                storage?.getPlaylistAccessTime(playlistItem.mediaId) ?: 0L
+            }
+        }
+
+        return children
+    }
 
     /** Provides access to the media items by media id. */
     fun getMediaItemByMediaId(mediaId: String) = mediaIdToMediaItem[mediaId]
