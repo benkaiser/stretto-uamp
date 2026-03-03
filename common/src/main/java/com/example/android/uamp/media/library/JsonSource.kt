@@ -16,8 +16,10 @@
 
 package com.example.android.uamp.media.library
 
+import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
@@ -25,6 +27,7 @@ import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
+import java.io.File
 import java.io.IOException
 import java.io.InputStreamReader
 import java.net.URL
@@ -36,52 +39,100 @@ import java.util.concurrent.TimeUnit
  * The definition of the JSON is specified in the docs of [JsonMusic] in this file,
  * which is the object representation of it.
  */
-internal class JsonSource(private val source: Uri) : AbstractMusicSource() {
+internal class JsonSource(private val source: Uri, private val context: Context) : AbstractMusicSource() {
 
     companion object {
         const val ORIGINAL_ARTWORK_URI_KEY = "com.example.android.uamp.JSON_ARTWORK_URI"
+        private const val CACHE_FILE_NAME = "catalog.json"
+        private const val TAG = "JsonSource"
     }
 
     private var catalog: List<androidx.media3.common.MediaItem> = emptyList()
     private var playlists: List<JsonPlaylist> = emptyList()
 
+    /** Callback invoked when the catalog is updated from a background network fetch. */
+    var onCatalogUpdated: (() -> Unit)? = null
+
+    /** Track the raw JSON string for comparison to detect changes. */
+    private var lastCatalogJson: String? = null
+
+    /** The cache file in the app's internal cache directory. */
+    private val cacheFile get() = File(context.cacheDir, CACHE_FILE_NAME)
+
     init {
-        state = STATE_INITIALIZING
+        // Try loading from cache synchronously during construction so that
+        // STATE_INITIALIZED is set before any MediaBrowser can connect and call
+        // onGetChildren(). This avoids a race where the load() coroutine is
+        // queued on Dispatchers.Main but can't run until after the browser
+        // connection chain finishes — causing the UI to block on ConditionVariable.
+        val cachedJson = loadFromCache()
+        if (cachedJson != null) {
+            val parsed = parseCatalog(cachedJson)
+            if (parsed != null) {
+                lastCatalogJson = cachedJson
+                catalog = parsed.first
+                playlists = parsed.second
+                state = STATE_INITIALIZED  // Unblocks all waiters immediately
+                Log.i(TAG, "Loaded catalog from cache (${catalog.size} items)")
+            } else {
+                Log.w(TAG, "Cached catalog was corrupt, deleting")
+                try { cacheFile.delete() } catch (_: Exception) {}
+                state = STATE_INITIALIZING
+            }
+        } else {
+            state = STATE_INITIALIZING
+        }
     }
 
     override fun iterator(): Iterator<MediaItem> = catalog.iterator()
 
     override suspend fun load() {
-        updateCatalog(source)?.let { updatedCatalog ->
-            catalog = updatedCatalog
-            state = STATE_INITIALIZED
-        } ?: run {
+        // The cache was already loaded synchronously in init{}.
+        // This method only does the network revalidation.
+        val freshJson = downloadJsonString(source)
+        if (freshJson != null) {
+            if (freshJson != lastCatalogJson) {
+                // Data changed — update catalog
+                val parsed = parseCatalog(freshJson)
+                if (parsed != null) {
+                    lastCatalogJson = freshJson
+                    saveToCache(freshJson)
+                    catalog = parsed.first
+                    playlists = parsed.second
+                    if (state == STATE_INITIALIZED) {
+                        // Already was initialized from cache — notify of update
+                        onCatalogUpdated?.invoke()
+                    } else {
+                        // First successful load (no cache existed)
+                        state = STATE_INITIALIZED
+                    }
+                }
+            } else {
+                // Network data matches cache — save to refresh file timestamp
+                saveToCache(freshJson)
+            }
+        } else if (state != STATE_INITIALIZED) {
+            // Network failed and no cache was available
             catalog = emptyList()
             state = STATE_ERROR
         }
+        // If network failed but cache was loaded, just keep using the cache (no error)
     }
 
     /**
-     * Function to connect to a remote URI and download/process the JSON file that corresponds to
-     * [MediaMetadataCompat] objects.
+     * Parses a raw JSON string into a list of MediaItems and playlists.
+     * Returns null if parsing fails.
      */
-    private suspend fun updateCatalog(catalogUri: Uri): List<MediaItem>? {
-        return withContext(Dispatchers.IO) {
-            val musicCat = try {
-                downloadJson(catalogUri)
-            } catch (ioException: IOException) {
-                return@withContext null
-            }
-
+    private fun parseCatalog(json: String): Pair<List<MediaItem>, List<JsonPlaylist>>? {
+        return try {
+            val musicCat = Gson().fromJson(json, JsonCatalog::class.java)
             // Get the base URI to fix up relative references later.
-            val baseUri = catalogUri.toString().removeSuffix(catalogUri.lastPathSegment ?: "")
+            val baseUri = source.toString().removeSuffix(source.lastPathSegment ?: "")
 
-            playlists = musicCat.playlists
-
-            musicCat.music.map { song ->
+            val mediaItems = musicCat.music.map { song ->
                 // The JSON may have paths that are relative to the source of the JSON
                 // itself. We need to fix them up here to turn them into absolute paths.
-                catalogUri.scheme?.let { scheme ->
+                source.scheme?.let { scheme ->
                     if (!song.source.startsWith(scheme)) {
                         song.source = baseUri + song.source
                     }
@@ -110,6 +161,57 @@ internal class JsonSource(private val source: Uri) : AbstractMusicSource() {
                         setMediaMetadata(mediaMetadata)
                     }.build()
             }.toList()
+
+            Pair(mediaItems, musicCat.playlists)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing catalog JSON", e)
+            null
+        }
+    }
+
+    /**
+     * Downloads the raw JSON string from the given URI.
+     * Returns null if the download fails.
+     */
+    private suspend fun downloadJsonString(catalogUri: Uri): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val catalogConn = URL(catalogUri.toString())
+                val reader = BufferedReader(InputStreamReader(catalogConn.openStream()))
+                reader.use { it.readText() }
+            } catch (ioException: IOException) {
+                Log.e(TAG, "Error downloading catalog", ioException)
+                null
+            }
+        }
+    }
+
+    /**
+     * Loads the raw JSON string from the disk cache.
+     * Returns null if the cache file doesn't exist or can't be read.
+     */
+    private fun loadFromCache(): String? {
+        return try {
+            val file = cacheFile
+            if (file.exists()) {
+                file.readText()
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reading cache file", e)
+            null
+        }
+    }
+
+    /**
+     * Saves the raw JSON string to the disk cache.
+     */
+    private fun saveToCache(json: String) {
+        try {
+            cacheFile.writeText(json)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error writing cache file", e)
         }
     }
 
@@ -122,19 +224,6 @@ internal class JsonSource(private val source: Uri) : AbstractMusicSource() {
             playlist.songs.contains(item.mediaId)
         }
         return mediaItem
-    }
-
-    /**
-     * Attempts to download a catalog from a given Uri.
-     *
-     * @param catalogUri URI to attempt to download the catalog form.
-     * @return The catalog downloaded, or an empty catalog if an error occurred.
-     */
-    @Throws(IOException::class)
-    private fun downloadJson(catalogUri: Uri): JsonCatalog {
-        val catalogConn = URL(catalogUri.toString())
-        val reader = BufferedReader(InputStreamReader(catalogConn.openStream()))
-        return Gson().fromJson(reader, JsonCatalog::class.java)
     }
 }
 

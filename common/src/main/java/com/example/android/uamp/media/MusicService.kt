@@ -57,6 +57,7 @@ import com.example.android.uamp.media.library.MusicSource
 import com.example.android.uamp.media.library.UAMP_BROWSABLE_ROOT
 import com.example.android.uamp.media.library.UAMP_RECENT_ROOT
 import com.example.android.uamp.media.library.UAMP_PLAYLISTS_ROOT
+import com.example.android.uamp.media.library.UAMP_ALBUMS_ROOT
 import com.example.android.uamp.media.library.UAMP_RECOMMENDED_ROOT
 import com.example.android.uamp.media.library.UAMP_SHUFFLE_PREFIX
 import com.google.android.gms.cast.framework.CastContext
@@ -98,11 +99,20 @@ open class MusicService : MediaLibraryService() {
     private lateinit var storage: PersistentStorage
 
     /**
-     * This must be `by lazy` because the [musicSource] won't initially be ready. Use
-     * [callWhenMusicSourceReady] to be sure it is safely ready for usage.
+     * The browse tree holding the music catalog structure. Built lazily on first access
+     * (after the music source is ready). Can be rebuilt when fresh data arrives from the network.
      */
-    private val browseTree: BrowseTree by lazy {
-        BrowseTree(applicationContext, musicSource, storage = storage)
+    private var _browseTree: BrowseTree? = null
+    private val browseTree: BrowseTree
+        get() {
+            if (_browseTree == null) {
+                _browseTree = buildBrowseTree()
+            }
+            return _browseTree!!
+        }
+
+    private fun buildBrowseTree(): BrowseTree {
+        return BrowseTree(applicationContext, musicSource, storage = storage)
     }
 
     private val recentRootMediaItem: MediaItem by lazy {
@@ -231,13 +241,25 @@ open class MusicService : MediaLibraryService() {
         // The media library is built from a remote JSON file. We start loading asynchronously here.
         // Use [callWhenMusicSourceReady] to execute code that needs the source load being
         // completed.
-        musicSource = JsonSource(source = remoteJsonSource)
+        packageValidator = PackageValidator(this, R.xml.allowed_media_browser_callers)
+        storage = PersistentStorage.getInstance(applicationContext)
+
+        musicSource = JsonSource(source = remoteJsonSource, context = applicationContext)
+        (musicSource as? JsonSource)?.onCatalogUpdated = {
+            serviceScope.launch {
+                _browseTree = buildBrowseTree()
+                // Notify all connected browsers that content has changed
+                mediaSession.connectedControllers.forEach { controller ->
+                    mediaSession.notifyChildrenChanged(controller, UAMP_BROWSABLE_ROOT, 0, null)
+                    mediaSession.notifyChildrenChanged(controller, UAMP_RECOMMENDED_ROOT, 0, null)
+                    mediaSession.notifyChildrenChanged(controller, UAMP_ALBUMS_ROOT, 0, null)
+                    mediaSession.notifyChildrenChanged(controller, UAMP_PLAYLISTS_ROOT, 0, null)
+                }
+            }
+        }
         serviceScope.launch {
             musicSource.load()
         }
-
-        packageValidator = PackageValidator(this, R.xml.allowed_media_browser_callers)
-        storage = PersistentStorage.getInstance(applicationContext)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
