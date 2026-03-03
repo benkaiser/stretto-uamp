@@ -29,4 +29,8 @@
     <color name="nowPlayingWhiteBackground">#fdfdfd</color>
 
     <color name="menu_icon_tint">#ffffff</color>
+
+    <!-- Mini-player colors -->
+    <color name="miniPlayerBackground">#FFFAFAFA</color>
+    <color name="miniPlayerDivider">#FFE0E0E0</color>
 </resources>

@@ -32,6 +32,7 @@ import androidx.media3.common.Player
 import com.example.android.uamp.MainActivity
 import com.example.android.uamp.MediaItemData
 import com.example.android.uamp.common.MusicServiceConnection
+import com.example.android.uamp.common.PlaybackState
 import com.example.android.uamp.fragments.NowPlayingFragment
 import com.example.android.uamp.media.extensions.isEnded
 import com.example.android.uamp.media.extensions.isPlayEnabled
@@ -48,6 +49,10 @@ class MainActivityViewModel(
 ) : ViewModel() {
 
     private lateinit var lastBrowsableMediaId: String
+
+    val nowPlaying: LiveData<MediaItem> = musicServiceConnection.nowPlaying
+    val playbackState: LiveData<PlaybackState> = musicServiceConnection.playbackState
+    val player: Player? get() = musicServiceConnection.player
 
     val rootMediaItem: LiveData<MediaItem> =
         musicServiceConnection.rootMediaItem.switchMap { rootMediaItem ->

@@ -41,4 +41,15 @@
 
     <dimen name="now_playing_title_size">32sp</dimen>
     <dimen name="now_playing_artist_size">18sp</dimen>
+
+    <!-- Mini-player dimensions -->
+    <dimen name="mini_player_height">56dp</dimen>
+    <dimen name="mini_player_progress_height">3dp</dimen>
+    <dimen name="mini_player_button_size">40dp</dimen>
+    <dimen name="mini_player_padding">16dp</dimen>
+
+    <!-- Now-playing control dimensions -->
+    <dimen name="now_playing_skip_button_size">48dp</dimen>
+    <dimen name="now_playing_play_pause_button_size">64dp</dimen>
+    <dimen name="now_playing_seekbar_margin">16dp</dimen>
 </resources>

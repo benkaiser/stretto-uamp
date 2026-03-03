@@ -18,12 +18,20 @@ package com.example.android.uamp
 
 import android.media.AudioManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Menu
+import android.view.MenuItem
+import android.view.View
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Observer
 import androidx.media3.common.MediaItem
+import com.example.android.uamp.common.NOTHING_PLAYING
+import com.example.android.uamp.databinding.ActivityMainBinding
 import com.example.android.uamp.fragments.MediaItemFragment
+import com.example.android.uamp.fragments.NowPlayingFragment
+import com.example.android.uamp.fragments.SearchFragment
 import com.example.android.uamp.media.MusicService
 import com.example.android.uamp.utils.Event
 import com.example.android.uamp.utils.InjectorUtils
@@ -37,6 +45,10 @@ class MainActivity : AppCompatActivity() {
         InjectorUtils.provideMainActivityViewModel(this)
     }
     private var castContext: CastContext? = null
+    private lateinit var binding: ActivityMainBinding
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var updateMiniPlayerPosition = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,7 +57,8 @@ class MainActivity : AppCompatActivity() {
         // created in the AppBar
         castContext = CastContext.getSharedInstance(this)
 
-        setContentView(R.layout.activity_main)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
         // Since UAMP is a music player, the volume controls should adjust the music volume while
         // in the app.
@@ -63,6 +76,8 @@ class MainActivity : AppCompatActivity() {
                 )
                 if (fragmentRequest.backStack) transaction.addToBackStack(null)
                 transaction.commit()
+                // Update mini-player visibility after fragment transaction commits
+                binding.root.post { updateMiniPlayerVisibility() }
             }
         })
 
@@ -85,6 +100,95 @@ class MainActivity : AppCompatActivity() {
                 navigateToMediaItem(mediaId)
             }
         })
+
+        // Observe now playing to update mini-player title/artist
+        viewModel.nowPlaying.observe(this, Observer { mediaItem ->
+            if (mediaItem != null && mediaItem != NOTHING_PLAYING) {
+                binding.miniPlayer.miniPlayerTitle.text = mediaItem.mediaMetadata.title
+                binding.miniPlayer.miniPlayerArtist.text = mediaItem.mediaMetadata.artist
+                    ?: mediaItem.mediaMetadata.albumTitle
+            }
+            updateMiniPlayerVisibility()
+        })
+
+        // Observe playback state to update mini-player play/pause icon
+        viewModel.playbackState.observe(this, Observer { playbackState ->
+            val res = if (playbackState.isPlaying) {
+                R.drawable.ic_pause_black_24dp
+            } else {
+                R.drawable.ic_play_arrow_black_24dp
+            }
+            binding.miniPlayer.miniPlayerPlayPause.setImageResource(res)
+        })
+
+        // Mini-player bar click → open NowPlayingFragment
+        binding.miniPlayer.miniPlayerContainer.setOnClickListener {
+            viewModel.showFragment(NowPlayingFragment.newInstance())
+        }
+
+        // Mini-player play/pause button
+        binding.miniPlayer.miniPlayerPlayPause.setOnClickListener {
+            val player = viewModel.player ?: return@setOnClickListener
+            if (player.isPlaying) {
+                player.pause()
+            } else {
+                player.play()
+            }
+        }
+
+        // Mini-player next button
+        binding.miniPlayer.miniPlayerNext.setOnClickListener {
+            viewModel.player?.seekToNext()
+        }
+
+        // Listen for back stack changes to update mini-player visibility
+        supportFragmentManager.addOnBackStackChangedListener {
+            binding.root.post { updateMiniPlayerVisibility() }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        updateMiniPlayerPosition = true
+        checkMiniPlayerPosition()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        updateMiniPlayerPosition = false
+    }
+
+    /**
+     * Polls the player position at ~1s intervals and updates the mini-player progress bar.
+     */
+    private fun checkMiniPlayerPosition() {
+        handler.postDelayed({
+            val player = viewModel.player
+            if (player != null) {
+                val duration = player.duration
+                val position = player.currentPosition
+                if (duration > 0) {
+                    binding.miniPlayer.miniPlayerProgress.progress = (position * 1000 / duration).toInt()
+                }
+            }
+            if (updateMiniPlayerPosition) {
+                checkMiniPlayerPosition()
+            }
+        }, 1000)
+    }
+
+    /**
+     * Shows the mini-player when something is playing AND the current fragment
+     * is not NowPlayingFragment.
+     */
+    private fun updateMiniPlayerVisibility() {
+        val hasNowPlaying = viewModel.nowPlaying.value != null
+                && viewModel.nowPlaying.value != NOTHING_PLAYING
+        val currentFragment = supportFragmentManager.findFragmentById(R.id.fragmentContainer)
+        val isNowPlayingVisible = currentFragment is NowPlayingFragment
+
+        binding.miniPlayer.miniPlayerContainer.visibility =
+            if (hasNowPlaying && !isNowPlayingVisible) View.VISIBLE else View.GONE
     }
 
     @Override
@@ -99,6 +203,17 @@ class MainActivity : AppCompatActivity() {
             CastButtonFactory.setUpMediaRouteButton(this, menu, com.example.android.uamp.media.R.id.media_route_menu_item)
         }
         return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        return when (item.itemId) {
+            com.example.android.uamp.media.R.id.search_menu_item -> {
+                val searchFragment = SearchFragment.newInstance()
+                viewModel.showFragment(searchFragment, backStack = true, tag = "search")
+                true
+            }
+            else -> super.onOptionsItemSelected(item)
+        }
     }
 
     private fun navigateToMediaItem(mediaId: String) {

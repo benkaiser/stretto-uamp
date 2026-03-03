@@ -56,6 +56,11 @@ class NowPlayingFragmentViewModel(
     val mediaButtonRes = MutableLiveData<Int>().apply {
         postValue(R.drawable.ic_album_black_24dp)
     }
+    val mediaProgress = MutableLiveData<Int>().apply {
+        postValue(0)
+    }
+
+    var isSeekBarDragging = false
 
     private var updatePosition = true
     private val handler = Handler(Looper.getMainLooper())
@@ -107,9 +112,27 @@ class NowPlayingFragmentViewModel(
         val currPosition = musicServiceConnection.player?.currentPosition ?: 0
         if (mediaPosition.value != currPosition)
             mediaPosition.postValue(currPosition)
+        if (!isSeekBarDragging) {
+            val duration = musicServiceConnection.player?.duration ?: 0
+            if (duration > 0) {
+                mediaProgress.postValue((currPosition * 1000 / duration).toInt())
+            }
+        }
         if (updatePosition)
             checkPlaybackPosition(1000 - (currPosition % 1000))
     }, delayMs)
+
+    fun seekTo(positionMs: Long) {
+        musicServiceConnection.player?.seekTo(positionMs)
+    }
+
+    fun skipToNext() {
+        musicServiceConnection.player?.seekToNext()
+    }
+
+    fun skipToPrevious() {
+        musicServiceConnection.player?.seekToPrevious()
+    }
 
     /**
      * Since we use [LiveData.observeForever] above (in [musicServiceConnection]), we want

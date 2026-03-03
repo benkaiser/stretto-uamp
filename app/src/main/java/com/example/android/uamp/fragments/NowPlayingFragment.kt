@@ -22,6 +22,7 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.SeekBar
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.fragment.app.viewModels
@@ -89,6 +90,12 @@ class NowPlayingFragment : Fragment() {
             Observer { duration ->
                 binding.duration.text = timestampToMSS(context, duration)
             })
+        nowPlayingViewModel.mediaProgress.observe(viewLifecycleOwner,
+            Observer { progress ->
+                if (!nowPlayingViewModel.isSeekBarDragging) {
+                    binding.seekBar.progress = progress
+                }
+            })
 
         // Setup UI handlers for buttons
         binding.mediaButton.setOnClickListener {
@@ -96,6 +103,41 @@ class NowPlayingFragment : Fragment() {
                 mainActivityViewModel.playMedia(it, pauseThenPlaying = true)
             }
         }
+
+        binding.skipPrevious.setOnClickListener {
+            nowPlayingViewModel.skipToPrevious()
+        }
+
+        binding.skipNext.setOnClickListener {
+            nowPlayingViewModel.skipToNext()
+        }
+
+        // SeekBar listener
+        binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) {
+                    val duration = nowPlayingViewModel.mediaDuration.value ?: 0L
+                    if (duration > 0) {
+                        val positionMs = (progress.toLong() * duration) / 1000
+                        binding.position.text = timestampToMSS(context, positionMs)
+                    }
+                }
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                nowPlayingViewModel.isSeekBarDragging = true
+            }
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val progress = seekBar?.progress ?: 0
+                val duration = nowPlayingViewModel.mediaDuration.value ?: 0L
+                if (duration > 0) {
+                    val positionMs = (progress.toLong() * duration) / 1000
+                    nowPlayingViewModel.seekTo(positionMs)
+                }
+                nowPlayingViewModel.isSeekBarDragging = false
+            }
+        })
 
         // Initialize playback duration and position to zero
         binding.duration.text = timestampToMSS(context, 0L)

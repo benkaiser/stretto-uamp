@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/miniPlayerContainer"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:clickable="true"
+    android:focusable="true"
+    android:background="@color/miniPlayerBackground"
+    android:contentDescription="@string/mini_player"
+    android:visibility="gone">
+
+    <ProgressBar
+        android:id="@+id/miniPlayerProgress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/mini_player_progress_height"
+        android:layout_gravity="top"
+        android:max="1000"
+        android:progress="0"
+        android:progressTint="@color/colorAccent" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/mini_player_height"
+        android:layout_marginTop="@dimen/mini_player_progress_height"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/mini_player_padding"
+        android:paddingEnd="0dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/miniPlayerTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                tools:text="Song Title" />
+
+            <TextView
+                android:id="@+id/miniPlayerArtist"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textSize="12sp"
+                tools:text="Artist Name" />
+        </LinearLayout>
+
+        <ImageButton
+            android:id="@+id/miniPlayerPlayPause"
+            android:layout_width="@dimen/mini_player_button_size"
+            android:layout_height="@dimen/mini_player_button_size"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/play_pause"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_play_arrow_black_24dp" />
+
+        <ImageButton
+            android:id="@+id/miniPlayerNext"
+            android:layout_width="@dimen/mini_player_button_size"
+            android:layout_height="@dimen/mini_player_button_size"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/skip_next"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_skip_next_black_24dp" />
+    </LinearLayout>
+</FrameLayout>
