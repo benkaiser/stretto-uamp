@@ -58,6 +58,7 @@ import com.example.android.uamp.media.library.UAMP_BROWSABLE_ROOT
 import com.example.android.uamp.media.library.UAMP_RECENT_ROOT
 import com.example.android.uamp.media.library.UAMP_PLAYLISTS_ROOT
 import com.example.android.uamp.media.library.UAMP_RECOMMENDED_ROOT
+import com.example.android.uamp.media.library.UAMP_SHUFFLE_PREFIX
 import com.google.android.gms.cast.framework.CastContext
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
@@ -157,7 +158,7 @@ open class MusicService : MediaLibraryService() {
      */
     private val exoPlayer: Player by lazy {
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("UAMP/1.0")
+            .setUserAgent("Stretto/1.0")
             .setConnectTimeoutMs(10000)
             .setReadTimeoutMs(10000)
         val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
@@ -373,11 +374,6 @@ open class MusicService : MediaLibraryService() {
             val rootMediaItem = if (!isKnownCaller) {
                 MediaItem.EMPTY
             } else if (params?.isRecent == true) {
-                if (exoPlayer.currentTimeline.isEmpty) {
-                    storage.loadRecentSong()?.let {
-                        preparePlayerForResumption(it)
-                    }
-                }
                 recentRootMediaItem
             } else {
                 catalogueRootMediaItem
@@ -480,20 +476,54 @@ open class MusicService : MediaLibraryService() {
                     return@callWhenMusicSourceReady mutableListOf<MediaItem>()
                 }
 
+                // Issue 1: Handle shuffle items
+                val firstMediaId = mediaItems[0].mediaId
+                if (firstMediaId.startsWith(UAMP_SHUFFLE_PREFIX)) {
+                    val parentId = firstMediaId.removePrefix(UAMP_SHUFFLE_PREFIX)
+                    val shuffled = browseTree.getShuffledPlaylistOrLibrary(parentId)
+
+                    // Log the URLs that will be played
+                    shuffled.forEachIndexed { index, item ->
+                        Log.d(TAG, "Shuffle item $index: ID=${item.mediaId}, URI=${item.localConfiguration?.uri}")
+                    }
+
+                    return@callWhenMusicSourceReady shuffled
+                }
+
                 if (mediaItems.size > 1) {
                     // For multiple items, resolve each one and return them
-                    return@callWhenMusicSourceReady mediaItems.mapNotNull { mediaItem ->
-                        browseTree.getMediaItemByMediaId(mediaItem.mediaId)
-                    }.toMutableList()
+                    // Filter out shuffle items — they're virtual UI elements, not playable songs
+                    return@callWhenMusicSourceReady mediaItems
+                        .filter { !it.mediaId.startsWith(UAMP_SHUFFLE_PREFIX) }
+                        .mapNotNull { mediaItem ->
+                            browseTree.getMediaItemByMediaId(mediaItem.mediaId)
+                        }.toMutableList()
                 }
 
-                // For a single item, get the shuffled library/playlist starting with this song
-                val resolvedMediaItems = browseTree.getLibraryShuffledOn(mediaItems[0].mediaId, lastParentId)
+                // Issue 2 & 3: For a single item, find the correct parent
+                val mediaId = firstMediaId
+
+                // Verify the song exists in lastParentId's children; if not, find the correct parent
+                val resolvedParentId = browseTree.findParentForSong(mediaId, lastParentId)
+                    ?: UAMP_RECOMMENDED_ROOT
+
+                val resolvedMediaItems = browseTree.getLibraryShuffledOn(mediaId, resolvedParentId)
+
+                // If the resolved list is empty or doesn't contain the song, fall back to
+                // resolving the song directly and building a queue from the library
+                if (resolvedMediaItems.isEmpty() || resolvedMediaItems.none { it.mediaId == mediaId }) {
+                    val directItem = browseTree.getMediaItemByMediaId(mediaId)
+                    if (directItem != null) {
+                        val library = browseTree.getLibrary()
+                        library.removeAll { it.mediaId == mediaId }
+                        library.shuffle()
+                        library.add(0, directItem)
+                        return@callWhenMusicSourceReady library
+                    }
+                }
 
                 // Track playlist access if we're playing from a playlist
-                lastParentId?.let { parentId ->
-                    trackPlaylistAccess(parentId)
-                }
+                trackPlaylistAccess(resolvedParentId)
 
                 // Log the URLs that will be played
                 resolvedMediaItems.forEachIndexed { index, item ->

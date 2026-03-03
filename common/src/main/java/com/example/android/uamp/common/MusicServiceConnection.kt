@@ -41,6 +41,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.example.android.uamp.media.MusicService
+import com.example.android.uamp.media.library.UAMP_SHUFFLE_PREFIX
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.CoroutineScope

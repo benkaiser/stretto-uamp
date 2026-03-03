@@ -35,6 +35,7 @@ import com.example.android.uamp.common.MusicServiceConnection
 import com.example.android.uamp.fragments.NowPlayingFragment
 import com.example.android.uamp.media.extensions.isEnded
 import com.example.android.uamp.media.extensions.isPlayEnabled
+import com.example.android.uamp.media.library.UAMP_SHUFFLE_PREFIX
 import com.example.android.uamp.utils.Event
 import kotlinx.coroutines.launch
 
@@ -141,12 +142,34 @@ class MainActivityViewModel(
             }
         } else {
             viewModelScope.launch {
+                // Handle shuffle item: get all playable siblings, shuffle, and play
+                if (mediaItem.mediaId.startsWith(UAMP_SHUFFLE_PREFIX)) {
+                    parentMediaId?.let {
+                        val playlist = musicServiceConnection.getChildren(parentMediaId)
+                            .filter {
+                                (it.mediaMetadata.isPlayable ?: false) &&
+                                        !it.mediaId.startsWith(UAMP_SHUFFLE_PREFIX)
+                            }
+                            .toMutableList()
+                        if (playlist.isNotEmpty()) {
+                            playlist.shuffle()
+                            player.setMediaItems(
+                                playlist, 0, /* startPositionMs= */ C.TIME_UNSET
+                            )
+                            player.prepare()
+                            player.play()
+                        }
+                    }
+                    return@launch
+                }
+
                 var playlist: MutableList<MediaItem> = arrayListOf()
                 // load the children of the parent if requested
                 parentMediaId?.let {
                     playlist = musicServiceConnection.getChildren(parentMediaId).let { children ->
                         children.filter {
-                            it.mediaMetadata.isPlayable ?: false
+                            (it.mediaMetadata.isPlayable ?: false) &&
+                                    !it.mediaId.startsWith(UAMP_SHUFFLE_PREFIX)
                         }
                     }.toMutableList()
                 }

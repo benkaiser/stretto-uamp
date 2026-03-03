@@ -152,6 +152,10 @@ internal class BrowseTree(
                 playlistChildren += song
             }
             mediaIdToChildren[playlistMediaItem.mediaId] = playlistChildren
+            // Insert shuffle item at top of playlist
+            val playlistShuffleItem = buildShuffleItem(playlistMediaItem.mediaId)
+            playlistChildren.add(0, playlistShuffleItem)
+            mediaIdToMediaItem[playlistShuffleItem.mediaId] = playlistShuffleItem
         }
 
         mediaIdToChildren[UAMP_BROWSABLE_ROOT] = rootList
@@ -174,6 +178,14 @@ internal class BrowseTree(
                 mediaIdToChildren[UAMP_RECENT_ROOT] = mutableListOf(mediaItem)
             }
             mediaIdToMediaItem[mediaItem.mediaId] = mediaItem
+        }
+
+        // Insert shuffle item at top of the recommended (Library) root
+        val recommendedChildren = mediaIdToChildren[UAMP_RECOMMENDED_ROOT]
+        if (recommendedChildren != null && recommendedChildren.isNotEmpty()) {
+            val libraryShuffleItem = buildShuffleItem(UAMP_RECOMMENDED_ROOT)
+            recommendedChildren.add(0, libraryShuffleItem)
+            mediaIdToMediaItem[libraryShuffleItem.mediaId] = libraryShuffleItem
         }
     }
 
@@ -200,7 +212,9 @@ internal class BrowseTree(
     fun getMediaItemByMediaId(mediaId: String) = mediaIdToMediaItem[mediaId]
 
     fun getLibrary(): MutableList<MediaItem> {
-        return mediaIdToChildren[UAMP_RECOMMENDED_ROOT]?.toMutableList() ?: mutableListOf()
+        return mediaIdToChildren[UAMP_RECOMMENDED_ROOT]
+            ?.filter { !it.mediaId.startsWith(UAMP_SHUFFLE_PREFIX) }
+            ?.toMutableList() ?: mutableListOf()
     }
 
     fun getPlaylist(parentId: String?): MutableList<MediaItem>? {
@@ -212,6 +226,8 @@ internal class BrowseTree(
 
     fun getLibraryShuffledOn(mediaId: String, parentId: String?): MutableList<MediaItem> {
         val libraryOrPlaylist = getPlaylist(parentId) ?: getLibrary()
+        // Filter out shuffle items from the queue
+        libraryOrPlaylist.removeAll { it.mediaId.startsWith(UAMP_SHUFFLE_PREFIX) }
         val currentSong = getMediaItemByMediaId(mediaId)
         if (currentSong === null) {
             return libraryOrPlaylist
@@ -223,7 +239,86 @@ internal class BrowseTree(
     }
 
     fun getFirstPlayableMediaItem(): MediaItem? {
-        return mediaIdToChildren[UAMP_RECOMMENDED_ROOT]?.find { it.mediaMetadata.isPlayable == true }
+        return mediaIdToChildren[UAMP_RECOMMENDED_ROOT]?.find {
+            it.mediaMetadata.isPlayable == true && !it.mediaId.startsWith(UAMP_SHUFFLE_PREFIX)
+        }
+    }
+
+    /**
+     * Returns all playable songs for a given parent ID, fully shuffled.
+     * Filters out non-playable items (e.g., the shuffle item itself).
+     */
+    fun getShuffledPlaylistOrLibrary(parentId: String): MutableList<MediaItem> {
+        val children = mediaIdToChildren[parentId]?.toMutableList() ?: getLibrary()
+        val playable = children.filter { it.mediaMetadata.isPlayable == true }.toMutableList()
+        playable.shuffle()
+        return playable
+    }
+
+    /**
+     * Finds the parent ID that contains a song with the given media ID.
+     * Prioritizes [preferredParentId] if it contains the song, otherwise searches
+     * playlists, then falls back to the recommended root.
+     */
+    fun findParentForSong(mediaId: String, preferredParentId: String? = null): String? {
+        // First check the preferred parent
+        if (preferredParentId != null) {
+            val children = mediaIdToChildren[preferredParentId]
+            if (children != null && children.any { it.mediaId == mediaId }) {
+                return preferredParentId
+            }
+        }
+
+        // Search playlists
+        val playlistItems = mediaIdToChildren[UAMP_PLAYLISTS_ROOT]
+        if (playlistItems != null) {
+            for (playlist in playlistItems) {
+                val children = mediaIdToChildren[playlist.mediaId]
+                if (children != null && children.any { it.mediaId == mediaId }) {
+                    return playlist.mediaId
+                }
+            }
+        }
+
+        // Check albums
+        val albumItems = mediaIdToChildren[UAMP_ALBUMS_ROOT]
+        if (albumItems != null) {
+            for (album in albumItems) {
+                val children = mediaIdToChildren[album.mediaId]
+                if (children != null && children.any { it.mediaId == mediaId }) {
+                    return album.mediaId
+                }
+            }
+        }
+
+        // Fall back to recommended root if it contains the song
+        val recommended = mediaIdToChildren[UAMP_RECOMMENDED_ROOT]
+        if (recommended != null && recommended.any { it.mediaId == mediaId }) {
+            return UAMP_RECOMMENDED_ROOT
+        }
+
+        return null
+    }
+
+    /**
+     * Builds a playable "Shuffle All" MediaItem for the given parent ID.
+     */
+    private fun buildShuffleItem(parentId: String): MediaItem {
+        val shuffleMetadata = MediaMetadata.Builder().apply {
+            setTitle(context.getString(R.string.shuffle_all))
+            setArtworkUri(
+                Uri.parse(
+                    RESOURCE_ROOT_URI +
+                            context.resources.getResourceEntryName(R.drawable.ic_shuffle)
+                )
+            )
+            setFolderType(MediaMetadata.FOLDER_TYPE_NONE)
+            setIsPlayable(true)
+        }.build()
+        return MediaItem.Builder().apply {
+            setMediaId("$UAMP_SHUFFLE_PREFIX$parentId")
+            setMediaMetadata(shuffleMetadata)
+        }.build()
     }
 
     /**
@@ -265,6 +360,7 @@ const val UAMP_RECOMMENDED_ROOT = "__RECOMMENDED__"
 const val UAMP_ALBUMS_ROOT = "__ALBUMS__"
 const val UAMP_RECENT_ROOT = "__RECENT__"
 const val UAMP_PLAYLISTS_ROOT = "__PLAYLISTS__"
+const val UAMP_SHUFFLE_PREFIX = "__SHUFFLE__/"
 
 const val MEDIA_SEARCH_SUPPORTED = "android.media.browse.SEARCH_SUPPORTED"
 
