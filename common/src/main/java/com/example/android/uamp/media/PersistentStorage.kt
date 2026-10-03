@@ -90,6 +90,26 @@ internal class PersistentStorage private constructor(val context: Context) {
         }
     }
 
+    fun saveQueue(mediaIds: List<String>, index: Int, position: Long) {
+        preferences.edit()
+            .putString(QUEUE_MEDIA_IDS_KEY, mediaIds.joinToString("\n"))
+            .putInt(QUEUE_INDEX_KEY, index)
+            .putLong(QUEUE_POSITION_KEY, position)
+            .apply()
+    }
+
+    /** Returns the last queue as (media ids, index, position), or null if nothing was saved. */
+    fun loadQueue(): Triple<List<String>, Int, Long>? {
+        val ids = preferences.getString(QUEUE_MEDIA_IDS_KEY, null)
+            ?.split("\n")?.filter { it.isNotEmpty() }
+        if (ids.isNullOrEmpty()) return null
+        return Triple(
+            ids,
+            preferences.getInt(QUEUE_INDEX_KEY, 0),
+            preferences.getLong(QUEUE_POSITION_KEY, 0L)
+        )
+    }
+
     suspend fun savePlaylistAccess(playlistId: String) {
         withContext(Dispatchers.IO) {
             val currentTime = System.currentTimeMillis()
@@ -124,3 +144,6 @@ private const val RECENT_SONG_SUBTITLE_KEY = "recent_song_subtitle"
 private const val RECENT_SONG_ICON_URI_KEY = "recent_song_icon_uri"
 private const val RECENT_SONG_POSITION_KEY = "recent_song_position"
 private const val PLAYLIST_ACCESS_TIME_PREFIX = "playlist_access_time_"
+private const val QUEUE_MEDIA_IDS_KEY = "queue_media_ids"
+private const val QUEUE_INDEX_KEY = "queue_index"
+private const val QUEUE_POSITION_KEY = "queue_position"

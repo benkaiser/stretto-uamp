@@ -18,6 +18,7 @@ package com.example.android.uamp.media.library
 
 import android.content.Context
 import android.net.Uri
+import android.os.Bundle
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -131,18 +132,7 @@ internal class BrowseTree(
             if (mediaItem === null) {
                 return@forEach
             }
-            val playlistMetadata = mediaItem.mediaMetadata.buildUpon().apply {
-                setTitle(playlist.title)
-                setAlbumTitle("")
-                setFolderType(MediaMetadata.FOLDER_TYPE_PLAYLISTS)
-                setIsPlayable(false)
-            }.build()
-            val playlistMediaItem = mediaItem.buildUpon().apply {
-                setMediaId(playlist.title.toString().urlEncoded)
-                setMediaMetadata(playlistMetadata)
-            }.build()
-            playlistRoot += playlistMediaItem
-            // now add all the songs under the playlist title as a parent
+            // now collect all the songs under the playlist title as a parent
             val playlistChildren = mutableListOf<MediaItem>()
             playlist.songs.forEach { songId ->
                 val song = musicSource.find { it.mediaId == songId }
@@ -151,6 +141,17 @@ internal class BrowseTree(
                 }
                 playlistChildren += song
             }
+            val playlistMetadata = mediaItem.mediaMetadata.buildUpon().apply {
+                setTitle(playlist.title)
+                setAlbumTitle("")
+                setFolderType(MediaMetadata.FOLDER_TYPE_PLAYLISTS)
+                setIsPlayable(false)
+            }.build().withSongCount(playlistChildren.size)
+            val playlistMediaItem = mediaItem.buildUpon().apply {
+                setMediaId(playlist.title.toString().urlEncoded)
+                setMediaMetadata(playlistMetadata)
+            }.build()
+            playlistRoot += playlistMediaItem
             mediaIdToChildren[playlistMediaItem.mediaId] = playlistChildren
             // Insert shuffle item at top of playlist
             val playlistShuffleItem = buildShuffleItem(playlistMediaItem.mediaId)
@@ -180,6 +181,9 @@ internal class BrowseTree(
             mediaIdToMediaItem[mediaItem.mediaId] = mediaItem
         }
 
+        buildArtistsAndSongs(rootList)
+        finalizeAlbums()
+
         // Insert shuffle item at top of the recommended (Library) root
         val recommendedChildren = mediaIdToChildren[UAMP_RECOMMENDED_ROOT]
         if (recommendedChildren != null && recommendedChildren.isNotEmpty()) {
@@ -198,11 +202,18 @@ internal class BrowseTree(
     operator fun get(mediaId: String): List<MediaItem>? {
         val children = mediaIdToChildren[mediaId] ?: return null
 
-        // If requesting playlists, sort them by MRU order
+        // If requesting playlists, sort them by MRU order and expose when each was last played.
         if (mediaId == UAMP_PLAYLISTS_ROOT) {
-            return children.sortedByDescending { playlistItem ->
-                storage?.getPlaylistAccessTime(playlistItem.mediaId) ?: 0L
-            }
+            return children.map { playlistItem ->
+                val accessTime = storage?.getPlaylistAccessTime(playlistItem.mediaId) ?: 0L
+                val extras = Bundle(playlistItem.mediaMetadata.extras ?: Bundle())
+                extras.putLong(ACCESS_TIME_KEY, accessTime)
+                playlistItem.buildUpon()
+                    .setMediaMetadata(
+                        playlistItem.mediaMetadata.buildUpon().setExtras(extras).build()
+                    )
+                    .build() to accessTime
+            }.sortedByDescending { it.second }.map { it.first }
         }
 
         return children
@@ -211,10 +222,94 @@ internal class BrowseTree(
     /** Provides access to the media items by media id. */
     fun getMediaItemByMediaId(mediaId: String) = mediaIdToMediaItem[mediaId]
 
+    /** Adds the Artists root, per-artist nodes (with shuffle items) and the hidden all-songs node. */
+    private fun buildArtistsAndSongs(rootList: MutableList<MediaItem>) {
+        val allSongs = mutableListOf<MediaItem>()
+        val byArtist = linkedMapOf<String, MutableList<MediaItem>>()
+        musicSource.forEach { song ->
+            allSongs += song
+            val artist = song.mediaMetadata.artist?.toString()?.trim().orEmpty()
+                .ifEmpty { UNKNOWN_ARTIST }
+            byArtist.getOrPut(artist) { mutableListOf() } += song
+        }
+        mediaIdToChildren[UAMP_SONGS_ROOT] = allSongs
+
+        val artistItems = byArtist.entries
+            .sortedBy { it.key.lowercase() }
+            .map { (artist, songs) ->
+                val artistId = "$UAMP_ARTIST_PREFIX${artist.urlEncoded}"
+                val metadata = MediaMetadata.Builder().apply {
+                    setTitle(artist)
+                    setArtworkUri(songs.first().mediaMetadata.artworkUri)
+                    setFolderType(MediaMetadata.FOLDER_TYPE_ARTISTS)
+                    setIsPlayable(false)
+                    setExtras(songs.first().mediaMetadata.extras)
+                }.build().withSongCount(songs.size)
+                val shuffleItem = buildShuffleItem(artistId)
+                mediaIdToChildren[artistId] = (listOf(shuffleItem) + songs).toMutableList()
+                mediaIdToMediaItem[shuffleItem.mediaId] = shuffleItem
+                MediaItem.Builder().setMediaId(artistId).setMediaMetadata(metadata).build()
+            }.toMutableList()
+        mediaIdToChildren[UAMP_ARTISTS_ROOT] = artistItems
+
+        val artistsMetadata = MediaMetadata.Builder().apply {
+            setTitle(context.getString(R.string.artists_title))
+            setArtworkUri(
+                Uri.parse(
+                    RESOURCE_ROOT_URI +
+                            context.resources.getResourceEntryName(R.drawable.ic_album)
+                )
+            )
+            setIsPlayable(false)
+            setFolderType(MediaMetadata.FOLDER_TYPE_ARTISTS)
+        }.build()
+        rootList += MediaItem.Builder().apply {
+            setMediaId(UAMP_ARTISTS_ROOT)
+            setMediaMetadata(artistsMetadata)
+        }.build()
+    }
+
+    /** Sorts albums alphabetically and records how many songs each one holds. */
+    private fun finalizeAlbums() {
+        val albums = mediaIdToChildren[UAMP_ALBUMS_ROOT] ?: return
+        val withCounts = albums.map { album ->
+            val count = mediaIdToChildren[album.mediaId]?.size ?: 0
+            album.buildUpon()
+                .setMediaMetadata(album.mediaMetadata.withSongCount(count))
+                .build()
+        }.sortedBy { it.mediaMetadata.albumTitle?.toString()?.lowercase() ?: "" }
+        mediaIdToChildren[UAMP_ALBUMS_ROOT] = withCounts.toMutableList()
+    }
+
+    private fun MediaMetadata.withSongCount(count: Int): MediaMetadata {
+        val newExtras = Bundle(extras ?: Bundle())
+        newExtras.putInt(SONG_COUNT_KEY, count)
+        return buildUpon().setExtras(newExtras).build()
+    }
+
+    /**
+     * Resolves the ordered queue for a play request on [parentId] (a playlist, album, artist or
+     * the whole library) along with the index to start from.
+     */
+    fun getPlayQueue(parentId: String, startMediaId: String?): Pair<MutableList<MediaItem>, Int> {
+        val queue = playableChildren(parentId)
+        val index = startMediaId?.let { id -> queue.indexOfFirst { it.mediaId == id } } ?: -1
+        return Pair(queue, if (index >= 0) index else 0)
+    }
+
+    private fun playableChildren(parentId: String): MutableList<MediaItem> {
+        if (parentId == UAMP_RECOMMENDED_ROOT || parentId == UAMP_SONGS_ROOT) {
+            return getLibrary()
+        }
+        val children = mediaIdToChildren[parentId] ?: return getLibrary()
+        return children.filter {
+            it.mediaMetadata.isPlayable == true && !it.mediaId.startsWith(UAMP_SHUFFLE_PREFIX)
+        }.toMutableList()
+    }
+
+    /** Every song in the catalog, in catalog order. */
     fun getLibrary(): MutableList<MediaItem> {
-        return mediaIdToChildren[UAMP_RECOMMENDED_ROOT]
-            ?.filter { !it.mediaId.startsWith(UAMP_SHUFFLE_PREFIX) }
-            ?.toMutableList() ?: mutableListOf()
+        return mediaIdToChildren[UAMP_SONGS_ROOT]?.toMutableList() ?: mutableListOf()
     }
 
     fun getPlaylist(parentId: String?): MutableList<MediaItem>? {
@@ -249,8 +344,7 @@ internal class BrowseTree(
      * Filters out non-playable items (e.g., the shuffle item itself).
      */
     fun getShuffledPlaylistOrLibrary(parentId: String): MutableList<MediaItem> {
-        val children = mediaIdToChildren[parentId]?.toMutableList() ?: getLibrary()
-        val playable = children.filter { it.mediaMetadata.isPlayable == true }.toMutableList()
+        val playable = playableChildren(parentId)
         playable.shuffle()
         return playable
     }
@@ -360,7 +454,21 @@ const val UAMP_RECOMMENDED_ROOT = "__RECOMMENDED__"
 const val UAMP_ALBUMS_ROOT = "__ALBUMS__"
 const val UAMP_RECENT_ROOT = "__RECENT__"
 const val UAMP_PLAYLISTS_ROOT = "__PLAYLISTS__"
+const val UAMP_ARTISTS_ROOT = "__ARTISTS__"
+const val UAMP_SONGS_ROOT = "__SONGS__"
+const val UAMP_ARTIST_PREFIX = "__ARTIST__/"
 const val UAMP_SHUFFLE_PREFIX = "__SHUFFLE__/"
+
+/** Virtual item id of the form `__PLAY__/<parentId>` or `__PLAY__/<parentId>|<startSongId>`. */
+const val UAMP_PLAY_PREFIX = "__PLAY__/"
+const val UAMP_PLAY_START_SEPARATOR = "|"
+
+/** Extras key holding the number of songs behind a playlist, album or artist item. */
+/** Extras key holding when a playlist was last played (epoch millis, 0 if never). */
+const val ACCESS_TIME_KEY = "com.example.android.uamp.ACCESS_TIME"
+
+const val SONG_COUNT_KEY = "com.example.android.uamp.SONG_COUNT"
+private const val UNKNOWN_ARTIST = "Unknown Artist"
 
 const val MEDIA_SEARCH_SUPPORTED = "android.media.browse.SEARCH_SUPPORTED"
 

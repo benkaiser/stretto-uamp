@@ -108,7 +108,7 @@ class MusicServiceConnection(context: Context, serviceComponent: ComponentName) 
     }
 
     suspend fun getChildren(parentId: String): ImmutableList<MediaItem> {
-        return this.browser?.getChildren(parentId, 0, 100, null)?.await()?.value
+        return this.browser?.getChildren(parentId, 0, 10000, null)?.await()?.value
             ?: ImmutableList.of()
     }
 

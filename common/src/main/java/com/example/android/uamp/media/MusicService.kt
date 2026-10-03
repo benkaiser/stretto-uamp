@@ -59,6 +59,9 @@ import com.example.android.uamp.media.library.UAMP_RECENT_ROOT
 import com.example.android.uamp.media.library.UAMP_PLAYLISTS_ROOT
 import com.example.android.uamp.media.library.UAMP_ALBUMS_ROOT
 import com.example.android.uamp.media.library.UAMP_RECOMMENDED_ROOT
+import com.example.android.uamp.media.library.UAMP_ARTISTS_ROOT
+import com.example.android.uamp.media.library.UAMP_PLAY_PREFIX
+import com.example.android.uamp.media.library.UAMP_PLAY_START_SEPARATOR
 import com.example.android.uamp.media.library.UAMP_SHUFFLE_PREFIX
 import com.google.android.gms.cast.framework.CastContext
 import com.google.common.collect.ImmutableList
@@ -216,6 +219,8 @@ open class MusicService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        DebugLog.init(applicationContext)
+        DebugLog.log(TAG, "service created")
 
         if (castPlayer?.isCastSessionAvailable == true) {
             replaceableForwardingPlayer.setPlayer(castPlayer!!)
@@ -254,6 +259,7 @@ open class MusicService : MediaLibraryService() {
                     mediaSession.notifyChildrenChanged(controller, UAMP_RECOMMENDED_ROOT, 0, null)
                     mediaSession.notifyChildrenChanged(controller, UAMP_ALBUMS_ROOT, 0, null)
                     mediaSession.notifyChildrenChanged(controller, UAMP_PLAYLISTS_ROOT, 0, null)
+                    mediaSession.notifyChildrenChanged(controller, UAMP_ARTISTS_ROOT, 0, null)
                 }
             }
         }
@@ -300,10 +306,41 @@ open class MusicService : MediaLibraryService() {
         // Obtain the current song details *before* saving them on a separate thread, otherwise
         // the current player may have been unloaded by the time the save routine runs.
         val currentMediaItem = replaceableForwardingPlayer.currentMediaItem ?: return
+        val player = replaceableForwardingPlayer
+        storage.saveQueue(
+            (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId },
+            player.currentMediaItemIndex,
+            player.currentPosition
+        )
         serviceScope.launch {
             val mediaItem =
                 browseTree.getMediaItemByMediaId(currentMediaItem.mediaId) ?: return@launch
             storage.saveRecentSong(mediaItem, replaceableForwardingPlayer.currentPosition)
+        }
+    }
+
+    /**
+     * Restores the last played queue and position when a controller connects and nothing is
+     * queued yet. External controllers (e.g. Android Auto) also start playback; the phone app
+     * only gets the queue back, paused, so its now playing bar shows the last song.
+     */
+    private fun resumeLastQueue(play: Boolean) {
+        musicSource.whenReady { ready ->
+            DebugLog.log(TAG, "resumeLastQueue ready=$ready")
+            if (!ready) return@whenReady
+            serviceScope.launch {
+                val player = replaceableForwardingPlayer
+                if (player.mediaItemCount > 0) return@launch
+                val (ids, index, position) = storage.loadQueue() ?: return@launch
+                val items = ids.mapNotNull { browseTree.getMediaItemByMediaId(it) }.toMutableList()
+                if (items.isEmpty()) return@launch
+                val savedId = ids.getOrNull(index)
+                val startIndex = items.indexOfFirst { it.mediaId == savedId }.coerceAtLeast(0)
+                DebugLog.log(TAG, "resuming ${items.size} items at $startIndex")
+                player.setMediaItems(items, startIndex, position)
+                player.prepare()
+                if (play) player.play()
+            }
         }
     }
 
@@ -376,6 +413,15 @@ open class MusicService : MediaLibraryService() {
 
     open inner class MusicServiceCallback: MediaLibrarySession.Callback {
         private var lastParentId: String = ""
+
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ): MediaSession.ConnectionResult {
+            DebugLog.log(TAG, "onConnect from ${controller.packageName}")
+            resumeLastQueue(play = controller.packageName != packageName)
+            return super.onConnect(session, controller)
+        }
 
         override fun onGetLibraryRoot(
             session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?
@@ -451,6 +497,7 @@ open class MusicService : MediaLibraryService() {
             mediaId: String
         ): ListenableFuture<LibraryResult<MediaItem>> {
             return callWhenMusicSourceReady {
+                DebugLog.log(TAG, "onGetItem $mediaId from ${browser.packageName}")
                 LibraryResult.ofItem(
                     browseTree.getMediaItemByMediaId(mediaId) ?: browseTree.getFirstPlayableMediaItem() ?: MediaItem.EMPTY,
                     LibraryParams.Builder().build())
@@ -488,27 +535,75 @@ open class MusicService : MediaLibraryService() {
             }
         }
 
+        /**
+         * Expands a virtual `__PLAY__/<parent>[|<song>]` item into the parent's queue in order,
+         * starting at the requested song.
+         */
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val playId = mediaItems.singleOrNull()?.mediaId
+            if (playId == null || !playId.startsWith(UAMP_PLAY_PREFIX)) {
+                return super.onSetMediaItems(
+                    mediaSession, controller, mediaItems, startIndex, startPositionMs
+                )
+            }
+            return callWhenMusicSourceReady {
+                val expanded = expandPlayItem(playId)
+                if (expanded == null || expanded.first.isEmpty()) {
+                    MediaSession.MediaItemsWithStartPosition(mutableListOf(), C.INDEX_UNSET, C.TIME_UNSET)
+                } else {
+                    MediaSession.MediaItemsWithStartPosition(
+                        expanded.first, expanded.second, C.TIME_UNSET
+                    )
+                }
+            }
+        }
+
+        private fun expandPlayItem(mediaId: String): Pair<MutableList<MediaItem>, Int>? {
+            if (!mediaId.startsWith(UAMP_PLAY_PREFIX)) return null
+            val spec = mediaId.removePrefix(UAMP_PLAY_PREFIX)
+            val parentId = spec.substringBefore(UAMP_PLAY_START_SEPARATOR)
+            val startId = if (spec.contains(UAMP_PLAY_START_SEPARATOR)) {
+                spec.substringAfter(UAMP_PLAY_START_SEPARATOR)
+            } else null
+            val result = browseTree.getPlayQueue(parentId, startId)
+            trackPlaylistAccess(parentId)
+            DebugLog.log(TAG, "play '$parentId' start=$startId -> ${result.first.size} items @${result.second}")
+            return result
+        }
+
         override fun onAddMediaItems(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
             mediaItems: MutableList<MediaItem>
         ): ListenableFuture<MutableList<MediaItem>> {
             return callWhenMusicSourceReady {
+                DebugLog.log(TAG, "onAddMediaItems from ${controller.packageName}: " +
+                        mediaItems.take(3).joinToString { it.mediaId } + " (n=${mediaItems.size})")
                 if (mediaItems.isEmpty()) {
                     return@callWhenMusicSourceReady mutableListOf<MediaItem>()
                 }
 
-                // Issue 1: Handle shuffle items
                 val firstMediaId = mediaItems[0].mediaId
+                expandPlayItem(firstMediaId)?.let { return@callWhenMusicSourceReady it.first }
+
+                // Issue 1: Handle shuffle items
                 if (firstMediaId.startsWith(UAMP_SHUFFLE_PREFIX)) {
                     val parentId = firstMediaId.removePrefix(UAMP_SHUFFLE_PREFIX)
                     val shuffled = browseTree.getShuffledPlaylistOrLibrary(parentId)
+                    trackPlaylistAccess(parentId)
 
                     // Log the URLs that will be played
                     shuffled.forEachIndexed { index, item ->
                         Log.d(TAG, "Shuffle item $index: ID=${item.mediaId}, URI=${item.localConfiguration?.uri}")
                     }
 
+                    DebugLog.log(TAG, "shuffle '$parentId' -> ${shuffled.size} items, first=${shuffled.firstOrNull()?.mediaId}")
                     return@callWhenMusicSourceReady shuffled
                 }
 
@@ -586,6 +681,8 @@ open class MusicService : MediaLibraryService() {
 
     /** Listen for events from ExoPlayer. */
     private inner class PlayerEventListener : Player.Listener {
+        private var consecutiveErrors = 0
+
         override fun onEvents(player: Player, events: Player.Events) {
             if (events.contains(EVENT_POSITION_DISCONTINUITY)
                 || events.contains(EVENT_MEDIA_ITEM_TRANSITION)
@@ -595,15 +692,44 @@ open class MusicService : MediaLibraryService() {
             }
         }
 
+        override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+            DebugLog.log(TAG, "timeline windows=${timeline.windowCount} reason=$reason")
+        }
+
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            DebugLog.log(TAG, "transition -> ${mediaItem?.mediaId} reason=$reason")
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            DebugLog.log(TAG, "isPlaying=$isPlaying")
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            DebugLog.log(TAG, "playbackState=$playbackState item=${replaceableForwardingPlayer.currentMediaItem?.mediaId}")
+            if (playbackState == Player.STATE_READY) consecutiveErrors = 0
+        }
+
         override fun onPlayerError(error: PlaybackException) {
             var message = R.string.generic_error;
 
+            DebugLog.log(TAG, "player error ${error.errorCodeName} item=${replaceableForwardingPlayer.currentMediaItem?.mediaId} cause=${error.cause}")
             Log.e(TAG, "Player error: " + error.errorCodeName + " (" + error.errorCode + ")", error);
 
             if (error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
                 || error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND) {
                 message = R.string.error_media_not_found;
             }
+            val player = replaceableForwardingPlayer
+            consecutiveErrors++
+            // Skip the broken track, unless every track in the queue has failed in a row.
+            if (player.hasNextMediaItem() && consecutiveErrors < player.mediaItemCount) {
+                Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
+                player.seekToNextMediaItem()
+                player.prepare()
+                player.play()
+                return
+            }
+            consecutiveErrors = 0
             Toast.makeText(
                 applicationContext,
                 message,
