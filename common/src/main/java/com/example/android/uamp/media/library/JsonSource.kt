@@ -23,14 +23,12 @@ import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
+import com.example.android.uamp.common.auth.StrettoAccount
+import com.example.android.uamp.media.DebugLog
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
 import java.io.File
-import java.io.IOException
-import java.io.InputStreamReader
-import java.net.URL
 import java.util.concurrent.TimeUnit
 
 /**
@@ -39,7 +37,11 @@ import java.util.concurrent.TimeUnit
  * The definition of the JSON is specified in the docs of [JsonMusic] in this file,
  * which is the object representation of it.
  */
-internal class JsonSource(private val source: Uri, private val context: Context) : AbstractMusicSource() {
+internal class JsonSource(
+    private val source: Uri,
+    private val context: Context,
+    private val account: StrettoAccount
+) : AbstractMusicSource() {
 
     companion object {
         const val ORIGINAL_ARTWORK_URI_KEY = "com.example.android.uamp.JSON_ARTWORK_URI"
@@ -55,68 +57,86 @@ internal class JsonSource(private val source: Uri, private val context: Context)
 
     /** Track the raw JSON string for comparison to detect changes. */
     private var lastCatalogJson: String? = null
+    private var lastParseError: String? = null
 
     /** The cache file in the app's internal cache directory. */
-    private val cacheFile get() = File(context.cacheDir, CACHE_FILE_NAME)
+    private val cacheFile get() = File(context.filesDir, CACHE_FILE_NAME)
 
     init {
-        // Try loading from cache synchronously during construction so that
-        // STATE_INITIALIZED is set before any MediaBrowser can connect and call
-        // onGetChildren(). This avoids a race where the load() coroutine is
-        // queued on Dispatchers.Main but can't run until after the browser
-        // connection chain finishes — causing the UI to block on ConditionVariable.
-        val cachedJson = loadFromCache()
+        // Load the cached library synchronously so browsers that connect right away already see
+        // data. Without a cache the source starts empty but ready, so nothing ever blocks on it;
+        // listeners are told when the first download completes.
+        val cachedJson = if (account.isSignedIn) loadFromCache() else null
         if (cachedJson != null) {
             val parsed = parseCatalog(cachedJson)
             if (parsed != null) {
                 lastCatalogJson = cachedJson
                 catalog = parsed.first
                 playlists = parsed.second
-                state = STATE_INITIALIZED  // Unblocks all waiters immediately
                 Log.i(TAG, "Loaded catalog from cache (${catalog.size} items)")
             } else {
                 Log.w(TAG, "Cached catalog was corrupt, deleting")
                 try { cacheFile.delete() } catch (_: Exception) {}
-                state = STATE_INITIALIZING
             }
         } else {
-            state = STATE_INITIALIZING
+            try { cacheFile.delete() } catch (_: Exception) {}
         }
+        state = STATE_INITIALIZED
     }
 
     override fun iterator(): Iterator<MediaItem> = catalog.iterator()
 
     override suspend fun load() {
-        // The cache was already loaded synchronously in init{}.
-        // This method only does the network revalidation.
-        val freshJson = downloadJsonString(source)
-        if (freshJson != null) {
+        if (!account.isSignedIn) {
+            clear()
+            return
+        }
+        account.setSyncing(true)
+        try {
+            val rawJson = withContext(Dispatchers.IO) { account.fetchLibrary() }
+            val freshJson = withContext(Dispatchers.IO) { LibraryConverter.toCatalogJson(rawJson) }
+            DebugLog.log(TAG, "downloaded ${rawJson.length} bytes: ${rawJson.take(200)}")
+            // The session may have ended while the download was running.
+            if (!account.isSignedIn) return
             if (freshJson != lastCatalogJson) {
-                // Data changed — update catalog
                 val parsed = parseCatalog(freshJson)
                 if (parsed != null) {
                     lastCatalogJson = freshJson
                     saveToCache(freshJson)
                     catalog = parsed.first
                     playlists = parsed.second
-                    if (state == STATE_INITIALIZED) {
-                        // Already was initialized from cache — notify of update
-                        onCatalogUpdated?.invoke()
-                    } else {
-                        // First successful load (no cache existed)
-                        state = STATE_INITIALIZED
-                    }
+                    onCatalogUpdated?.invoke()
+                } else {
+                    account.setSyncError("Couldn't read your library: $lastParseError")
+                    return
                 }
-            } else {
-                // Network data matches cache — save to refresh file timestamp
-                saveToCache(freshJson)
+                DebugLog.log(TAG, "parsed ${catalog.size} songs, ${playlists.size} playlists")
             }
-        } else if (state != STATE_INITIALIZED) {
-            // Network failed and no cache was available
-            catalog = emptyList()
-            state = STATE_ERROR
+            account.setSyncError(
+                if (catalog.isEmpty()) "No playable songs found. ${LibraryConverter.describe(rawJson)}" else null
+            )
+        } catch (unauthorized: StrettoAccount.Unauthorized) {
+            Log.w(TAG, "Session expired", unauthorized)
+            account.clearSession()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error downloading library", e)
+            account.setSyncError(
+                if (catalog.isEmpty()) "Couldn't load your library. Check your connection and try again."
+                else "Couldn't refresh your library."
+            )
+        } finally {
+            account.setSyncing(false)
         }
-        // If network failed but cache was loaded, just keep using the cache (no error)
+    }
+
+    /** Empties the catalog and deletes the cache, e.g. after signing out. */
+    fun clear() {
+        lastCatalogJson = null
+        catalog = emptyList()
+        playlists = emptyList()
+        try { cacheFile.delete() } catch (_: Exception) {}
+        account.setSyncError(null)
+        onCatalogUpdated?.invoke()
     }
 
     /**
@@ -165,24 +185,9 @@ internal class JsonSource(private val source: Uri, private val context: Context)
             Pair(mediaItems, musicCat.playlists)
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing catalog JSON", e)
+            DebugLog.log(TAG, "parse failed: $e")
+            lastParseError = e.toString()
             null
-        }
-    }
-
-    /**
-     * Downloads the raw JSON string from the given URI.
-     * Returns null if the download fails.
-     */
-    private suspend fun downloadJsonString(catalogUri: Uri): String? {
-        return withContext(Dispatchers.IO) {
-            try {
-                val catalogConn = URL(catalogUri.toString())
-                val reader = BufferedReader(InputStreamReader(catalogConn.openStream()))
-                reader.use { it.readText() }
-            } catch (ioException: IOException) {
-                Log.e(TAG, "Error downloading catalog", ioException)
-                null
-            }
         }
     }
 

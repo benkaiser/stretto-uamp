@@ -112,7 +112,7 @@ fun HomeScreen(
         verticalArrangement = Arrangement.spacedBy(22.dp)
     ) {
         item(key = "header") {
-            HomeHeader(onSearch, Modifier.staggerIn(0))
+            HomeHeader(vm, onSearch, Modifier.staggerIn(0))
         }
         item(key = "hero") {
             ShuffleHero(
@@ -225,7 +225,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun HomeHeader(onSearch: () -> Unit, modifier: Modifier = Modifier) {
+private fun HomeHeader(vm: StrettoViewModel, onSearch: () -> Unit, modifier: Modifier = Modifier) {
     val hour = remember { Calendar.getInstance().get(Calendar.HOUR_OF_DAY) }
     val greeting = when (hour) {
         in 5..11 -> "Good morning"
@@ -252,6 +252,7 @@ private fun HomeHeader(onSearch: () -> Unit, modifier: Modifier = Modifier) {
         }
         CastButton()
         RoundIconButton(StrettoIcons.Search, "Search", onSearch)
+        AccountMenu(vm, Modifier.padding(start = 4.dp, end = 12.dp))
     }
 }
 

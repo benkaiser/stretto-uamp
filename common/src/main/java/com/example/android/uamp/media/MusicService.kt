@@ -51,6 +51,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.example.android.uamp.media.library.BrowseTree
+import com.example.android.uamp.common.auth.StrettoAccount
 import com.example.android.uamp.media.library.JsonSource
 import com.example.android.uamp.media.library.MEDIA_SEARCH_SUPPORTED
 import com.example.android.uamp.media.library.MusicSource
@@ -100,6 +101,7 @@ open class MusicService : MediaLibraryService() {
     private lateinit var musicSource: MusicSource
     private lateinit var packageValidator: PackageValidator
     private lateinit var storage: PersistentStorage
+    private lateinit var account: StrettoAccount
 
     /**
      * The browse tree holding the music catalog structure. Built lazily on first access
@@ -156,7 +158,7 @@ open class MusicService : MediaLibraryService() {
     }
 
     private val remoteJsonSource: Uri =
-        Uri.parse("https://next.kaiserapps.com/public/benjaminjkaiser@gmail.com/library.json")
+        Uri.parse("${StrettoAccount.BASE_URL}/latestdata")
 
     private val uAmpAudioAttributes = AudioAttributes.Builder()
         .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
@@ -249,7 +251,8 @@ open class MusicService : MediaLibraryService() {
         packageValidator = PackageValidator(this, R.xml.allowed_media_browser_callers)
         storage = PersistentStorage.getInstance(applicationContext)
 
-        musicSource = JsonSource(source = remoteJsonSource, context = applicationContext)
+        account = StrettoAccount.getInstance(applicationContext)
+        musicSource = JsonSource(source = remoteJsonSource, context = applicationContext, account = account)
         (musicSource as? JsonSource)?.onCatalogUpdated = {
             serviceScope.launch {
                 _browseTree = buildBrowseTree()
@@ -265,6 +268,34 @@ open class MusicService : MediaLibraryService() {
         }
         serviceScope.launch {
             musicSource.load()
+        }
+        observeAccount()
+    }
+
+    /** Reloads the library when the account changes or the UI asks for a refresh. */
+    private fun observeAccount() {
+        serviceScope.launch {
+            var previous = account.state.value
+            account.state.collect { current ->
+                if (current == previous) return@collect
+                val signedOut = previous.signedIn && !current.signedIn
+                previous = current
+                if (signedOut) {
+                    mediaSession.player.run {
+                        stop()
+                        clearMediaItems()
+                    }
+                    storage.clearAll()
+                }
+                (musicSource as? JsonSource)?.let { source ->
+                    if (current.signedIn) source.load() else source.clear()
+                }
+            }
+        }
+        serviceScope.launch {
+            account.refreshRequests.collect {
+                if (account.isSignedIn) musicSource.load()
+            }
         }
     }
 

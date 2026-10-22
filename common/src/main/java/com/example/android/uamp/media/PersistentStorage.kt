@@ -98,6 +98,11 @@ internal class PersistentStorage private constructor(val context: Context) {
             .apply()
     }
 
+    /** Forgets everything stored for the previous account (queue, last song, playlist history). */
+    fun clearAll() {
+        preferences.edit().clear().apply()
+    }
+
     /** Returns the last queue as (media ids, index, position), or null if nothing was saved. */
     fun loadQueue(): Triple<List<String>, Int, Long>? {
         val ids = preferences.getString(QUEUE_MEDIA_IDS_KEY, null)

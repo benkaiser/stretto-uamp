@@ -42,7 +42,10 @@
         <meta-data android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
             android:value="com.example.android.uamp.cast.UampCastOptionsProvider"/>
 
-        <activity android:name=".MainActivity" android:exported="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -72,6 +75,18 @@
                     android:host="example.android.com"
                     android:pathPattern="/uamp"
                     android:scheme="https" />
+            </intent-filter>
+
+            <!-- Callback from the browser sign-in -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="auth"
+                    android:scheme="stretto-native" />
             </intent-filter>
 
             <intent-filter>

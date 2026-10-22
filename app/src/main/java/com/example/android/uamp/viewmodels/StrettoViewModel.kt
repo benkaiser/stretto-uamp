@@ -13,6 +13,9 @@ import androidx.media3.common.Player
 import com.example.android.uamp.common.MusicServiceConnection
 import com.example.android.uamp.common.NOTHING_PLAYING
 import com.example.android.uamp.common.PlaybackState
+import com.example.android.uamp.common.auth.AccountState
+import com.example.android.uamp.common.auth.AuthException
+import com.example.android.uamp.common.auth.StrettoAccount
 import com.example.android.uamp.media.library.SONG_COUNT_KEY
 import com.example.android.uamp.media.library.UAMP_ALBUMS_ROOT
 import com.example.android.uamp.media.library.UAMP_ARTISTS_ROOT
@@ -27,6 +30,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import android.net.Uri
 
 /** Name of the catalog playlist that holds every song, newest first. */
 const val LIBRARY_PLAYLIST_ID = "Library"
@@ -38,6 +42,17 @@ class StrettoViewModel(
 ) : AndroidViewModel(application) {
 
     private val pinStore = PinStore(application)
+    private val account = StrettoAccount.getInstance(application)
+
+    val accountState: StateFlow<AccountState> = account.state
+    val syncing: StateFlow<Boolean> = account.syncing
+    val syncError: StateFlow<String?> = account.syncError
+
+    private val _signInBusy = MutableStateFlow(false)
+    val signInBusy: StateFlow<Boolean> = _signInBusy.asStateFlow()
+
+    private val _signInError = MutableStateFlow<String?>(null)
+    val signInError: StateFlow<String?> = _signInError.asStateFlow()
 
     val nowPlaying: LiveData<MediaItem> = connection.nowPlaying
     val playbackState: LiveData<PlaybackState> = connection.playbackState
@@ -77,6 +92,25 @@ class StrettoViewModel(
     }
 
     init {
+        viewModelScope.launch {
+            // Show the library as soon as a download finishes (or the account changes).
+            account.syncing.collect { syncing -> if (!syncing) refresh() }
+        }
+        viewModelScope.launch {
+            var wasSignedIn = account.isSignedIn
+            account.state.collect { current ->
+                if (wasSignedIn && !current.signedIn) {
+                    _playlists.value = emptyList()
+                    _albums.value = emptyList()
+                    _artists.value = emptyList()
+                    _songs.value = emptyList()
+                    _pinned.value = emptyList()
+                    pinStore.save(emptyList())
+                    lastNowPlayingId = null
+                }
+                wasSignedIn = current.signedIn
+            }
+        }
         connection.rootMediaItem.observeForever(rootObserver)
         connection.nowPlaying.observeForever(nowPlayingObserver)
     }
@@ -87,19 +121,68 @@ class StrettoViewModel(
     }
 
     fun refresh() {
+        if (!account.isSignedIn) return
         viewModelScope.launch {
             // The catalog may still be downloading on a first run, so retry while it is empty.
             repeat(8) {
+                if (!account.isSignedIn) return@launch
                 _playlists.value = connection.getChildren(UAMP_PLAYLISTS_ROOT)
                 _albums.value = connection.getChildren(UAMP_ALBUMS_ROOT)
                 _artists.value = connection.getChildren(UAMP_ARTISTS_ROOT)
                 _songs.value = connection.getChildren(UAMP_SONGS_ROOT)
                 _loaded.value = true
-                if (_songs.value.isNotEmpty()) return@launch
+                if (_songs.value.isNotEmpty() || !account.syncing.value) return@launch
                 delay(2000)
             }
         }
     }
+
+    // ---- Account ----
+
+    fun browserSignInUri(): Uri {
+        _signInError.value = null
+        return account.beginBrowserLogin()
+    }
+
+    fun isLoginCallback(uri: Uri?) = account.isLoginCallback(uri)
+
+    fun completeBrowserSignIn(callback: Uri) = runSignIn { account.completeBrowserLogin(callback) }
+
+    fun signInWithPassword(email: String, password: String) {
+        if (email.isBlank() || password.isEmpty()) {
+            _signInError.value = "Enter your email and password."
+            return
+        }
+        runSignIn { account.signInWithPassword(email, password) }
+    }
+
+    fun reportSignInError(message: String) {
+        _signInError.value = message
+    }
+
+    private fun runSignIn(block: suspend () -> Unit) {
+        viewModelScope.launch {
+            _signInBusy.value = true
+            _signInError.value = null
+            try {
+                block()
+                // The service starts downloading the library as soon as the session exists.
+                account.setSyncing(true)
+            } catch (e: AuthException) {
+                _signInError.value = e.message
+            } catch (e: java.io.IOException) {
+                _signInError.value = "Couldn't reach Stretto. Check your connection."
+            } finally {
+                _signInBusy.value = false
+            }
+        }
+    }
+
+    fun signOut() {
+        viewModelScope.launch { account.signOut() }
+    }
+
+    fun retrySync() = account.requestRefresh()
 
     private fun refreshPlaylists() {
         viewModelScope.launch {

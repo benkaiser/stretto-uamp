@@ -29,6 +29,8 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.runtime.mutableStateListOf
@@ -44,6 +46,8 @@ import com.example.android.uamp.common.NOTHING_PLAYING
 import com.example.android.uamp.ui.screens.AlbumsScreen
 import com.example.android.uamp.ui.screens.ArtistsScreen
 import com.example.android.uamp.ui.screens.CollectionKind
+import com.example.android.uamp.ui.screens.LibraryStatusScreen
+import com.example.android.uamp.ui.screens.SignInScreen
 import com.example.android.uamp.ui.screens.DetailScreen
 import com.example.android.uamp.ui.screens.HomeScreen
 import com.example.android.uamp.ui.screens.MiniPlayer
@@ -69,6 +73,8 @@ private data class Destination(
     val search: Boolean = false,
     val depth: Int = 0
 )
+
+private enum class Gate { SignIn, Library, App }
 
 private val ease = FastOutSlowInEasing
 
@@ -106,6 +112,37 @@ fun StrettoApp(vm: StrettoViewModel) {
     }
     // Registered last so it takes priority over the navigation back handler above.
     BackHandler(enabled = nowPlayingOpen) { nowPlayingOpen = false }
+
+    val account by vm.accountState.collectAsState()
+    val songs by vm.songs.collectAsState()
+    val gate = when {
+        !account.signedIn -> Gate.SignIn
+        songs.isEmpty() -> Gate.Library
+        else -> Gate.App
+    }
+
+    LaunchedEffect(gate) {
+        if (gate != Gate.App) {
+            tab = Tab.Home
+            stack.clear()
+            searchOpen = false
+            nowPlayingOpen = false
+        }
+    }
+
+    AnimatedContent(
+        targetState = gate,
+        transitionSpec = { fadeIn(tween(350)) togetherWith fadeOut(tween(250)) },
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        label = "gate"
+    ) { current ->
+        when (current) {
+            Gate.SignIn -> SignInScreen(vm)
+            Gate.Library -> LibraryStatusScreen(vm)
+            Gate.App -> Unit
+        }
+    }
+    if (gate != Gate.App) return
 
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Scaffold(
